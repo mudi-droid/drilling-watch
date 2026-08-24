@@ -26,6 +26,7 @@ import {
 import { type MessageResponse } from '@/api/chat/types';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { useMainLayout } from '@/components/block/chat/main-layout-context';
+import { FleetPanel } from '@/components/block/chat/fleet-panel';
 
 const initialMessages: MessageResponse[] = [
   {
@@ -104,6 +105,7 @@ export function ChatImplementation({ chatId }: { chatId: string }) {
 
   return (
     <Chat initialMessages={initialMessages}>
+      <FleetPanel events={combinedEvents ?? []} />
       <ScrollArea
         className="mb-5 min-h-0 w-full flex-1"
         scrollViewportRef={scrollContainerRef}

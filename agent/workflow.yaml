@@ -26,17 +26,25 @@ general:
     # If you don't want your agent to expose A2A endpoints, remove the following block.
     a2a:
       server:
-        name: Blog Content Writer
-        description: An AI content writing agent that researches and writes well-structured blog posts. Provide a topic and
-          it will generate a concise, publication-ready article in markdown format.
+        name: Drilling Watch
+        description: A remote-operations agent that watches two offshore rigs on a replayed telemetry stream, scores four
+          channels against DataRobot time-series forecast deployments, and convenes a two-person expert council on the rigs
+          whose residuals break threshold. Output is advisory; the operator decides.
       skills:  # Optional: advertise specific skills in the agent card
-        - id: write_blog
-          name: Write Blog Post
-          description: Researches and writes a blog post on the given topic.
+        - id: fleet_status
+          name: Fleet Status
+          description: Score both rigs at the current playhead step and report a verdict for each.
           tags: []
           examples:
-            - Write a blog post about the future of AI in healthcare
-            - Create an article about sustainable energy trends
+            - What's the fleet doing?
+            - Is GUY-002 clean?
+        - id: assess_incident
+          name: Assess Incident
+          description: Convene the Company Man and Well Control Specialist on an escalated rig and return the verdict card.
+          tags: []
+          examples:
+            - Why did you flag GUY-001?
+            - We commanded a pump shutdown for a connection — reassess GUY-001.
             # Optional: Okta cross-application access (XAA) authentication for this agent's A2A endpoints.
             # Uncomment to advertise XAA requirements on the agent card. See docs/agent/agent2agent-auth.md.
             # cross_application_access:
@@ -64,7 +72,7 @@ functions:
   langgraph_agent:
     _type: langgraph_agent
     llm_name: datarobot_llm
-    description: LangGraph planner/writer agent
+    description: Drilling Watch — deterministic detection plus a two-person expert council
     # tool_names:
     #   - remote_agent
 llms:
@@ -92,7 +100,7 @@ workflow:
   inner_agent_name: langgraph_agent
   memory_name: mem0_memory
   llm_name: datarobot_llm
-  description: LangGraph planner/writer agent with automatic memory capture and retrieval
+  description: Drilling Watch with automatic memory capture and retrieval
   middleware: [datarobot_moderation, datarobot_otel_conventions]
 middleware:
   datarobot_moderation:
