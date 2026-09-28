@@ -11,8 +11,6 @@ root:
 
       - If you already have a custom model deployed LLM and a deployment ID, select "DataRobot Deployed LLM" (this sets USE_DATAROBOT_LLM_GATEWAY=0 automatically).
 
-      - If you have a DataRobot NIM deployment, select "DataRobot NIM Deployed LLM".
-
       - If you want to use your own LLM provider credentials (e.g. Azure OpenAI, AWS Bedrock,
 
       GCP VertexAI, Anthropic, Cohere, TogetherAI) wrapped in a governed deployment, select
@@ -29,9 +27,6 @@ root:
       - name: "DataRobot Deployed LLM"
         value: "deployed_llm.py"
         requires: deployed_llm
-      - name: "DataRobot NIM Deployed LLM"
-        value: "nim_deployed_llm.py"
-        requires: nim_deployed_llm
       - name: "LLM Blueprint with External LLM"
         value: "blueprint_with_external_llm.py"
         requires: external_llm
@@ -60,34 +55,12 @@ deployed_llm:
     default: "0"
     hidden: true
 
-nim_deployed_llm:
-  - env: NIM_DEPLOYMENT_ID
-    type: string
-    optional: false
-    help: "Enter the deployment ID of your DataRobot NIM deployment (e.g., 6510c7b7c4f3f9407e24a849)."
-  - env: LLM_DEFAULT_MODEL
-    type: string
-    optional: false
-    help: "Enter the model your NIM deployment serves (e.g., meta-llama/Llama-3.1-8B). Stored datarobot/-prefixed automatically."
-  - env: USE_DATAROBOT_LLM_GATEWAY
-    type: string
-    default: "0"
-    hidden: true
-
-registered_model:
-  - env: TEXTGEN_REGISTERED_MODEL_ID
-    type: string
-    optional: false
-    help: "Enter the ID of the registered model with an LLM blueprint to use."
-  - env: DATAROBOT_TIMEOUT_MINUTES
-    type: number
-    default: 30
-    optional: true
-    help: "Enter the timeout in minutes for DataRobot operations (default: 30 minutes)."
-  - env: USE_DATAROBOT_LLM_GATEWAY
-    type: string
-    default: "0"
-    hidden: true
+# The nim_deployed_llm and registered_model sections are deliberately absent.
+# Both declare a required variable with no default (NIM_DEPLOYMENT_ID /
+# LLM_DEFAULT_MODEL, and TEXTGEN_REGISTERED_MODEL_ID), so a participant who
+# arrives at one has no value to give and no way forward. Neither LLM style is
+# used by this workshop — it runs on the gateway. Restore them from the upstream
+# template if you ever need them.
 
 external_llm:
   - env: LLM_DEFAULT_MODEL
