@@ -249,15 +249,27 @@ class DataRobotAGUIAgent(AGUIAgent):
         422, which means the second question in any conversation fails while the
         first one works.
 
-        So tool messages are dropped, along with the assistant turns that exist
-        only to carry tool_calls — their ids would otherwise point at messages that
-        are no longer in the payload. Nothing is lost by this: the agent calls its
-        tools afresh each turn, and scoring is stateless, so the same well at the
-        same as_of returns the same numbers either way.
+        Rather than discard what the tools returned, each tool result is carried
+        across as an assistant message. The agent keeps its memory of the readings
+        it already pulled, and the payload stays inside the roles the endpoint
+        accepts. Assistant turns holding nothing but tool_calls are dropped, since
+        their ids would point at messages that no longer exist in this shape.
+
+        Note this is only what gets sent back to the agent. The tool calls the
+        interface shows, and the spans in the tracing viewer, come from the event
+        stream and are unaffected.
         """
         messages = []
         for input_message in input.messages:
             if input_message.role == "tool":
+                if input_message.content:
+                    name = getattr(input_message, "name", None) or "tool"
+                    messages.append(
+                        {
+                            "role": "assistant",
+                            "content": f"[{name} returned] {input_message.content}",
+                        }
+                    )
                 continue
             if input_message.role == "assistant" and not input_message.content:
                 continue
