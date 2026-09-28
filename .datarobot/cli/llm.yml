@@ -42,8 +42,9 @@ root:
 llm_gateway:
   - env: LLM_DEFAULT_MODEL
     type: llmgw_catalog
-    optional: false
-    help: "Choose an LLM from the DataRobot LLM Gateway catalog to use for your LLM Blueprint."
+    default: "datarobot/azure/gpt-5-4-2026-03-05"
+    optional: true
+    help: "Choose an LLM from the DataRobot LLM Gateway catalog to use for your LLM Blueprint. The workshop default is fine."
   - env: USE_DATAROBOT_LLM_GATEWAY
     type: string
     default: "1"
