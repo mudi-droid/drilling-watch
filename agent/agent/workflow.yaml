@@ -1,0 +1,91 @@
+---
+# Copyright 2026 DataRobot, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+general:
+  front_end:
+    _type: dragent_fastapi
+    # Step adaptor is not necessary for custom agents
+    step_adaptor:
+      mode: 'off'
+    # If you don't want your agent to expose A2A endpoints, remove the following block.
+    a2a:
+      server:
+        name: Drilling Watch
+        description: A remote-operations Watcher for a four-well offshore drilling fleet. A deployed DataRobot classifier
+          answers whether the formation is involved; the agent names the incident (kick or lost circulation), reconciles it
+          against the operations log, and says whether a human needs to act.
+      skills:  # Optional: advertise specific skills in the agent card
+        - id: fleet_status
+          name: Fleet Status
+          description: Scores all four wells and renders a status table with delta flow, pit rate, SPP, gas, probability and
+            state word.
+          tags: []
+          examples: ["What's the fleet doing?", "Give me fleet status at 00:31"]
+        - id: assess_well
+          name: Assess a Well
+          description: Scores one well (optionally at a named time), names any incident, and reconciles it against the operations
+            log.
+          tags: []
+          examples:
+            - Why did you flag GUY-001?
+            - The pit is gaining on GUY-002 - should I be worried?
+            - Walk me through how the kick on GUY-002 developed, from onset to now.
+      # Optional: Okta cross-application access (XAA) authentication for this agent's A2A endpoints.
+      # Uncomment to advertise XAA requirements on the agent card. See docs/agent/agent2agent-auth.md.
+      # cross_application_access:
+      #   token_exchange:
+      #     trusted_issuer: "https://your-org.okta.com"
+      #     audience: "https://your-org.okta.com/oauth2/ausXXXXXXXXXXXXXXX"
+      #   token_request:
+      #     token_url: "https://your-org.okta.com/oauth2/ausXXXXXXXXXXXXXXX/v1/token"
+      #     audience: "https://example.com/agents/my-agent-id"
+      #     scopes:
+      #       - "dr.impersonation"
+      # Optional: external identity and URL overrides published on the agent card.
+      # external:
+      #   id: "my-agent-id"
+      #   url: "https://my-agent-id.example.com/a2a/"
+# To connect this agent to a remote A2A agent, uncomment the block below and add the
+# function group name to the workflow's tool_names list.
+# For Okta XAA auth, use auth_provider: okta_auth instead of datarobot_auth.
+# function_groups:
+#   remote_agent:
+#     _type: authenticated_a2a_client
+#     url: "https://app.datarobot.com/api/v2/deployments/<deployment-id>/directAccess/a2a/"
+#     auth_provider: datarobot_auth
+llms:
+  datarobot_llm:
+    _type: datarobot-llm-component
+  # To enable LLM provider fallback/failover, remove the datarobot_llm block above and uncomment the following:
+  # datarobot_llm:
+  #   _type: datarobot-llm-router
+  #   primary:
+  #     use_datarobot_llm_gateway: true
+  #     llm_default_model: azure/gpt-5-mini-2025-08-07
+  #   fallbacks:
+  #     - use_datarobot_llm_gateway: true
+  #       llm_default_model: anthropic/claude-opus-4-20250514
+  #   num_retries: 1
+workflow:
+  _type: langgraph_agent
+  llm_name: datarobot_llm
+  description: Drilling Watch - a four-well remote-drilling Watcher agent
+  # tool_names:
+  #   - remote_agent
+authentication:
+  datarobot_auth:
+    _type: datarobot_api_key
+  # Uncomment for Okta XAA authentication (requires PRINCIPAL_ID and PRIVATE_JWK env vars):
+  # okta_auth:
+  #   _type: okta_cross_app_access

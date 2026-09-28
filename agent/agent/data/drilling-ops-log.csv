@@ -1,0 +1,28 @@
+timestamp,series_id,event_type,duration_min,detail
+2026-03-01T00:01:45Z,GUY-001,mud_check,0.0,"Mud check: 12.3 ppg, PV 18, YP 14"
+2026-03-01T00:12:45Z,GUY-001,pump_rate_change,8.9,Pump rate increased 500 to 570 gpm per driller
+2026-03-01T00:23:10Z,GUY-001,equipment_check,0.0,Trip tank calibration checked
+2026-03-01T00:26:55Z,GUY-001,mud_transfer,5.8,Transferred 15 bbl from reserve pit to active system
+2026-03-01T00:31:50Z,GUY-001,shaker_screen,0.0,"Replaced shaker screen, No.2 unit"
+2026-03-01T00:49:45Z,GUY-001,shaker_screen,0.0,"Replaced shaker screen, No.3 unit"
+2026-03-01T00:57:00Z,GUY-001,crew_change,0.0,"Crew change, tour handover complete"
+2026-03-01T00:02:40Z,GUY-002,bit_record,0.0,"Bit record updated, 165 ft this run"
+2026-03-01T00:04:40Z,GUY-002,safety_meeting,0.0,Pre-tour safety meeting held
+2026-03-01T00:11:45Z,GUY-002,crew_change,0.0,"Crew change, tour handover complete"
+2026-03-01T00:35:10Z,GUY-002,mud_transfer,5.8,Transferred 14 bbl from reserve pit to active system
+2026-03-01T00:45:35Z,GUY-002,bit_record,0.0,"Bit record updated, 190 ft this run"
+2026-03-01T00:46:45Z,GUY-002,pump_rate_change,9.1,Pump rate increased 500 to 570 gpm per driller
+2026-03-01T00:53:40Z,GUY-002,survey,0.0,"Directional survey taken at 8,450 ft"
+2026-03-01T00:06:20Z,GUY-003,mud_check,0.0,"Mud check: 12.2 ppg, PV 18, YP 14"
+2026-03-01T00:22:35Z,GUY-003,mud_check,0.0,"Mud check: 12.8 ppg, PV 18, YP 14"
+2026-03-01T00:23:30Z,GUY-003,shaker_screen,0.0,"Replaced shaker screen, No.2 unit"
+2026-03-01T00:33:35Z,GUY-003,mud_transfer,5.8,Transferred 15 bbl from reserve pit to active system
+2026-03-01T00:40:55Z,GUY-003,shaker_screen,0.0,"Replaced shaker screen, No.3 unit"
+2026-03-01T00:47:20Z,GUY-003,equipment_check,0.0,Trip tank calibration checked
+2026-03-01T00:21:50Z,GUY-004,pump_rate_change,8.2,Pump rate increased 500 to 570 gpm per driller
+2026-03-01T00:45:05Z,GUY-004,shaker_screen,0.0,"Replaced shaker screen, No.3 unit"
+2026-03-01T00:45:20Z,GUY-004,shaker_screen,0.0,"Replaced shaker screen, No.2 unit"
+2026-03-01T00:45:35Z,GUY-004,equipment_check,0.0,BOP function test logged
+2026-03-01T00:46:50Z,GUY-004,equipment_check,0.0,Standpipe gauge cross-checked against MWD
+2026-03-01T00:50:05Z,GUY-004,survey,0.0,"Directional survey taken at 9,470 ft"
+2026-03-01T00:52:40Z,GUY-004,crew_change,0.0,"Crew change, tour handover complete"
