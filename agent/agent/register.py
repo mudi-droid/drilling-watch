@@ -15,12 +15,18 @@ from collections.abc import AsyncGenerator
 from typing import Annotated, Any
 
 from ag_ui.core import RunAgentInput
+from datarobot_genai.core.telemetry.agent import instrument
 from datarobot_genai.dragent.frontends.response import DRAgentEventResponse
+from datarobot_genai.langgraph.telemetry import instrument as instrument_langgraph
 from nat.builder.builder import Builder
 from nat.builder.framework_enum import LLMFrameworkEnum
 from nat.cli.register_workflow import register_per_user_function
 from nat.data_models.agent import AgentBaseConfig
 from nat.data_models.component_ref import FunctionGroupRef
+
+# INSTRUMENTATION CALL IS REQUIRED TO SETUP TRACING AND TELEMETRY FOR AGENTS
+instrument()
+instrument_langgraph()
 
 
 class LanggraphAgentConfig(AgentBaseConfig, name="langgraph_agent"):  # type: ignore[call-arg, misc]
@@ -43,14 +49,14 @@ async def langgraph_agent(
     config: LanggraphAgentConfig, builder: Builder
 ) -> AsyncGenerator[Any, None]:
     from datarobot_genai.core.mcp import MCPConfig
+    from datarobot_genai.dragent.context import (
+        extract_authorization_from_context,
+        extract_datarobot_headers_from_context,
+    )
     from datarobot_genai.dragent.frontends.converters import (
         aggregate_dragent_event_responses,
     )
     from datarobot_genai.langgraph.mcp import mcp_tools_context
-    from datarobot_genai.nat.helpers import (
-        extract_authorization_from_context,
-        extract_datarobot_headers_from_context,
-    )
     from nat.builder.function_info import FunctionInfo, Streaming
 
     from agent.myagent import MyAgent

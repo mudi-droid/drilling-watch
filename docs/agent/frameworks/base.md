@@ -132,7 +132,7 @@ class MyAgent(BaseAgent[None]):
 ### How to modify
 
 - **Change the system prompt**&mdash;edit the `"system"` message content in the messages list.
-- **Add chat history**&mdash;extract prior messages from `run_agent_input` and include them in the messages list.
+- **Add chat history**&mdash;use `self.history_messages(run_agent_input)` or `self.build_history_summary(run_agent_input)` from `BaseAgent`, or read `run_agent_input.messages` directly. See [Chat history](../chat-history.md).
 - **Implement multi-step workflows**&mdash;make multiple LLM calls with different system prompts and aggregate the results.
 - **Add structured output**&mdash;include format instructions in the system prompt (e.g. "Respond in JSON with keys: title, summary").
 - **Use `make_system_prompt()`**&mdash;you can optionally import it from `datarobot_genai.core.agents` for consistent formatting, even though it's not required.
@@ -151,6 +151,6 @@ class MyAgent(BaseAgent[None]):
 
 ## Extending
 
-1. **Add an LLM**&mdash;use `get_llm()` from `datarobot_genai.langgraph.llm` (or any other provider) and call it inside `invoke()`.
-2. **Add tools**&mdash;implement tool calls within `invoke()` using any library you prefer.
-3. **Enable DRAgent tools**&mdash;uncomment the `builder.get_llm()` and `builder.get_tools()` lines in `register.py` and add the appropriate `framework_wrappers`.
+1. Add an LLM&mdash;use `get_llm()` from `datarobot_genai.langgraph.llm` (or any other provider) and call it inside `invoke()`.
+2. Add tools&mdash;implement tool calls within `invoke()` using any library you prefer.
+3. Enable DRAgent tools&mdash;uncomment the `builder.get_llm()` and `builder.get_tools()` lines in `register.py` and add the appropriate `framework_wrappers`.

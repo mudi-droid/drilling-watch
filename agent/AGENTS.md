@@ -13,9 +13,9 @@ dr task run agent:install
 
 ## Agent Structure
 
-Agent must be implemented in the following location withing the `agent/agent` directory. None of the other files outside of this directory are related.
+Agent application code must be implemented in the `agent/agent` directory. The orchestration file `workflow.yaml` for DRAgent lives at the agent component root (`agent/workflow.yaml`), not inside `agent/agent/`.
 
-For detailed documentation, see [docs/agent/README.md](../docs/agent/README.md).
+For detailed documentation, see [docs/agent/README.md](../docs/agent/README.md). When upgrading layouts that still have `agent/agent/workflow.yaml`, see [workflow.yaml path migration](../docs/agent/migration-workflow-yaml-path.md).
 
 
 
@@ -39,10 +39,12 @@ Define a `ChatPromptTemplate` that structures user input:
 
 ```python
 prompt_template = ChatPromptTemplate.from_messages([
-    ("system", "You are a helpful assistant. Chat history: {chat_history}"),
+    ("system", "You are a helpful assistant that plans and writes content based on the user's topic."),
     ("user", "The topic is {topic}."),
 ])
 ```
+
+Prior turns from multi-turn requests are replayed as structured native messages automatically&mdash;see [Chat history](../docs/agent/chat-history.md).
 
 ### 3. Graph Factory
 
@@ -78,18 +80,18 @@ def graph_factory(llm, tools, verbose=False):
 
 ### 4. LLM Resolution
 
-The LLM is resolved via `get_llm()` from `datarobot_genai.langgraph.llm` in `custompy_adaptor`:
+The LLM is resolved by NAT based on `workflow.yaml` in `register.py`:
 
 ```python
-from datarobot_genai.langgraph.llm import get_llm
-
+llm = await builder.get_llm(config.llm_name, wrapper_type=LLMFrameworkEnum.CREWAI)
+...
 agent = MyAgent(
-    llm=get_llm(model_name=model_name),
+    llm=llm,
     ...
 )
 ```
 
-**CRITICAL**: Do NOT instantiate LLMs directly. Always use `get_llm()` which handles DataRobot LLM Gateway integration, deployed models, and external LLM providers. To add primary/fallback provider support, use `get_router_llm()` instead — see [LLM provider fallback](../docs/agent/llm-fallback.md).
+**CRITICAL**: Do NOT instantiate LLMs directly. Always use `builder.get_llm` which handles DataRobot LLM Gateway integration, deployed models, router models, and external LLM providers.
 
 ### 5. Agent tools
 
@@ -102,6 +104,18 @@ dr task run agent:install
 **IMPORTANT**: Tools must be imported and passed to agent nodes inside `graph_factory`.
 
 For detailed LangGraph documentation, see [docs/agent/frameworks/langgraph.md](../docs/agent/frameworks/langgraph.md).
+
+## Configuration
+
+All configuration lives in `agent/agent/config.py`. The `Config` class there is the authority for this agent component: `datarobot-genai` resolves the DataRobot connection and every LLM setting through it instead of reading the environment on its own. `agent/__init__.py` hands the class to the library on import, which is the only registration involved.
+
+- Add a setting by adding a field to `Config`. A field named `foo_bar` is read from `FOO_BAR` (environment variable, runtime parameter, `.env`, file secret, or Pulumi output).
+- Get one LLM's connection details with `Config().resolve_llm_config(name="llm")`. Nothing is registered per LLM.
+- LLM settings are namespaced by the LLM component's name, so `llm_deployment_id`, `llm_default_model`, `llm_nim_deployment_id`, and `llm_use_datarobot_llm_gateway` belong to the component named `llm`. A second LLM component brings its own set of fields under its own name.
+
+**CRITICAL**: Do NOT read LLM settings out of `os.environ`, and do NOT add a helper function that hands back an `LLMConfig`. Both route around `Config` and stop `config.py` from being authoritative. Resolve at the call site off `Config()` instead.
+
+For the full list of settings, see [Configuration](../docs/agent/README.md#configuration).
 
 ## Agent Testing
 
@@ -121,7 +135,7 @@ dr task run agent:test
 Run the following shell command to validate the agent after deployment. If the response has no errors then the deployment is successful.
 
 ```shell
-task agent:cli -- execute-deployment --user_prompt "Agent specific prompt to validate that it's working" --deployment_id <deployment_id>
+dr task run agent:cli -- -- execute-deployment --user_prompt "Agent specific prompt to validate that it's working" --deployment_id <deployment_id>
 ```
 
 ## Setting up custom metric and report values
@@ -129,6 +143,14 @@ task agent:cli -- execute-deployment --user_prompt "Agent specific prompt to val
 Refer to [Custom metrics](../docs/agent/custom-metrics.md) page for how to set up and report values to custom metrics.
 
 ## Migrations
+
+### Agent config authority
+
+`agent/config.py` is now the authoritative configuration for the agent component, `datarobot-genai` included, and the per-LLM settings are namespaced by the LLM component's name. See [agent config authority migration](../docs/agent/migration-config-authority.md).
+
+### 11.9.3 — `workflow.yaml` location
+
+Agent component 11.9.3 moved `workflow.yaml` from `agent/agent/workflow.yaml` to `agent/workflow.yaml`. NAT framework agents load this file. See [workflow.yaml path migration](../docs/agent/migration-workflow-yaml-path.md).
 
 ### 11.8.8 — New agent format (class-based → factory-based)
 
@@ -141,3 +163,5 @@ If you are upgrading an existing agent from a version prior to 11.8.8, follow th
 - [LlamaIndex migration](../docs/agent/frameworks/migration-to-11.8.8-llamaindex.md)
 - [Base agent migration](../docs/agent/frameworks/migration-to-11.8.8-base.md)
 - [NAT agent migration](../docs/agent/frameworks/migration-to-11.8.8-nat.md)
+- [workflow.yaml path migration (11.9.3)](../docs/agent/migration-workflow-yaml-path.md)
+- [agent config authority migration](../docs/agent/migration-config-authority.md)
