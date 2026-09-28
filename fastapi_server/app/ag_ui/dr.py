@@ -242,72 +242,31 @@ class DataRobotAGUIAgent(AGUIAgent):
             yield RunErrorEvent(message=str(e))
 
     def _prepare_chat_completions_input(self, input: RunAgentInput) -> Dict[str, Any]:
+        """Flatten the conversation into the roles the agent will accept.
+
+        The agent's chat endpoint takes user, assistant and system only. Replaying
+        a tool message from an earlier turn gets the entire request rejected with a
+        422, which means the second question in any conversation fails while the
+        first one works.
+
+        So tool messages are dropped, along with the assistant turns that exist
+        only to carry tool_calls — their ids would otherwise point at messages that
+        are no longer in the payload. Nothing is lost by this: the agent calls its
+        tools afresh each turn, and scoring is stateless, so the same well at the
+        same as_of returns the same numbers either way.
+        """
         messages = []
         for input_message in input.messages:
-            msg: Dict[str, Any] = {
-                "role": input_message.role,
-                "content": input_message.content,
-            }
-
-            if input_message.role == "assistant":
-                # OpenAI-compatible APIs require tool_calls on assistant messages so that
-                # subsequent tool messages (with tool_call_id) can be correlated.
-                raw_tool_calls = getattr(input_message, "tool_calls", None)
-                if raw_tool_calls:
-                    tool_calls_payload = []
-                    for tc in raw_tool_calls:
-                        raw_id = (
-                            tc.get("id")
-                            if isinstance(tc, dict)
-                            else getattr(tc, "id", None)
-                        )
-                        id_str = str(raw_id).strip() if raw_id is not None else ""
-                        if not id_str or id_str == "None":
-                            raise ValueError(
-                                "Assistant tool_calls must have a non-empty id so "
-                                "tool messages can be correlated; got missing or None id."
-                            )
-                        tc_id = raw_id
-                        if isinstance(tc, dict):
-                            fn = tc.get("function") or {}
-                            tool_calls_payload.append(
-                                {
-                                    "id": str(tc_id),
-                                    "type": "function",
-                                    "function": {
-                                        "name": fn.get("name", ""),
-                                        "arguments": fn.get("arguments", ""),
-                                    },
-                                }
-                            )
-                        else:
-                            fn = getattr(tc, "function", None)
-                            tool_calls_payload.append(
-                                {
-                                    "id": str(tc_id),
-                                    "type": "function",
-                                    "function": {
-                                        "name": getattr(fn, "name", "") if fn else "",
-                                        "arguments": (
-                                            getattr(fn, "arguments", "") or ""
-                                        )
-                                        if fn
-                                        else "",
-                                    },
-                                }
-                            )
-                    msg["tool_calls"] = tool_calls_payload
-
-            elif input_message.role == "tool":
-                tool_call_id = getattr(input_message, "tool_call_id", None) or getattr(
-                    input_message, "id", None
-                )
-                if tool_call_id is not None:
-                    msg["tool_call_id"] = str(tool_call_id)
-                err = getattr(input_message, "error", None)
-                if err is not None:
-                    msg["error"] = str(err)
-            messages.append(msg)
+            if input_message.role == "tool":
+                continue
+            if input_message.role == "assistant" and not input_message.content:
+                continue
+            messages.append(
+                {
+                    "role": input_message.role,
+                    "content": input_message.content,
+                }
+            )
         return {
             "messages": messages,
             "model": "unknown",
