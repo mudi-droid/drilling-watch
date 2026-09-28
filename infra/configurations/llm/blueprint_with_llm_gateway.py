@@ -29,6 +29,8 @@ from datarobot_pulumi_utils.schema.exec_envs import RuntimeEnvironments
 
 from . import use_case
 from .libllm import (
+    ensure_datarobot_prefix,
+    get_blueprint_runtime_parameters,
     validate_feature_flags,
     verify_llm,
     verify_llm_gateway_model_availability,
@@ -66,8 +68,8 @@ print("\n.   - ".join(
     ]
 ))
 """
-default_model: str = os.environ.get(
-    "LLM_DEFAULT_MODEL", "datarobot/azure/gpt-5-mini-2025-08-07"
+default_model: str = ensure_datarobot_prefix(
+    os.environ.get("LLM_DEFAULT_MODEL", "datarobot/azure/gpt-5-mini-2025-08-07")
 )
 default_llm_id: str = os.environ.get(
     "LLM_DEFAULT_LLM_ID",
@@ -101,6 +103,10 @@ llm_blueprint = datarobot.LlmBlueprint(
     ),
 )
 
+# Supply the FULL runtime parameter set explicitly. Passing a partial set makes the provider
+# drop every blueprint default that isn't restated, including DRUM system parameters such as
+# DEVICE_FOR_NEURAL_NETWORK_COMPUTATIONS that the model requires to load. The gateway path uses
+# no provider credentials, so only the blueprint/DRUM defaults are needed here.
 llm_custom_model = datarobot.CustomModel(
     resource_name="LLM Custom Model " + llm_resource_name,
     name="LLM Custom Model " + llm_resource_name,
@@ -110,6 +116,11 @@ llm_custom_model = datarobot.CustomModel(
     base_environment_id=RuntimeEnvironments.PYTHON_312_MODERATIONS.value.id,
     use_case_ids=[use_case.id],
     source_llm_blueprint_id=llm_blueprint.id,
+    runtime_parameter_values=get_blueprint_runtime_parameters(
+        llm_blueprint_id=llm_blueprint.id,
+        playground_id=playground.id,
+        llm_id=default_llm_id,
+    ),
 )
 
 if prediction_environment_id := os.environ.get(
@@ -180,6 +191,11 @@ custom_model_runtime_parameters = [
         key="LLM_DEPLOYMENT_ID",
         type="string",
         value=llm_deployment.id,
+    ),
+    datarobot.CustomModelRuntimeParameterValueArgs(
+        key="USE_DATAROBOT_LLM_GATEWAY",
+        type="string",
+        value="1",
     ),
     datarobot.CustomModelRuntimeParameterValueArgs(
         key="LLM_DEFAULT_MODEL",
