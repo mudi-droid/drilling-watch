@@ -14,7 +14,7 @@ This guide covers migrating a LangGraph agent from the class-based layout (pre-1
 
 ### 1. Update imports
 
-**Before:**
+**Before**:
 
 ```python
 from datarobot_genai.langgraph.agent import LangGraphAgent
@@ -23,7 +23,7 @@ from langchain_litellm.chat_models import ChatLiteLLM
 from agent.config import Config
 ```
 
-**After:**
+**After**:
 
 ```python
 from datarobot_genai.langgraph.agent import datarobot_agent_class_from_langgraph
@@ -34,32 +34,34 @@ Remove imports of `LangGraphAgent`, `ChatLiteLLM`, and `Config`.
 
 ### 2. Move `prompt_template` to module level
 
-**Before:**
+**Before**:
 
 ```python
 class MyAgent(LangGraphAgent):
     @property
     def prompt_template(self) -> ChatPromptTemplate:
         return ChatPromptTemplate.from_messages([
-            ("system", "You are a helpful assistant. Chat history: {chat_history}"),
+            ("system", "You are a helpful assistant that plans and writes content based on the user's topic."),
             ("user", "The topic is {topic}."),
         ])
 ```
 
-**After:**
+**After**:
 
 ```python
 prompt_template = ChatPromptTemplate.from_messages([
-    ("system", "You are a helpful assistant. Chat history: {chat_history}"),
+    ("system", "You are a helpful assistant that plans and writes content based on the user's topic."),
     ("user", "The topic is {topic}."),
 ])
 ```
+
+Prior turns are injected as structured native messages by default (no `{chat_history}` in the template). See [Chat history](../chat-history.md).
 
 ### 3. Replace the class with a `graph_factory` function
 
 Extract your `workflow` property and agent node properties into a standalone factory function. The function receives `llm`, `tools`, and `verbose` as arguments instead of reading them from `self`.
 
-**Before:**
+**Before**:
 
 ```python
 class MyAgent(LangGraphAgent):
@@ -92,7 +94,7 @@ class MyAgent(LangGraphAgent):
         return langgraph_workflow
 ```
 
-**After:**
+**After**:
 
 ```python
 def graph_factory(
@@ -136,13 +138,15 @@ Replace the entire `MyAgent` class with a single line:
 MyAgent = datarobot_agent_class_from_langgraph(graph_factory, prompt_template)
 ```
 
+Multi-turn context is injected automatically via structured history when the template omits `{chat_history}`. See [Multi-turn chat history](../chat-history.md).
+
 ### 5. Delete the `__init__` and `llm()` methods
 
 The entire `__init__` method (with `self.config`, `self.default_model`, `self._llm`, etc.) and the `llm()` method are no longer needed. Remove them.
 
 ### 6. Update `custompy_adaptor`
 
-**Before:**
+**Before**:
 
 ```python
 async def custompy_adaptor(completion_create_params, ...):
@@ -153,15 +157,22 @@ async def custompy_adaptor(completion_create_params, ...):
         timeout=...,
         forwarded_headers=...,
     )
+    return await agent_chat_completion_wrapper(agent, completion_create_params)
 ```
 
-**After:**
+**After**:
 
 ```python
 _PLACEHOLDER_MODELS = frozenset({"unknown"})
 
 async def custompy_adaptor(completion_create_params, ...):
-    ...
+    forwarded_headers = completion_create_params.get("forwarded_headers", {})
+    authorization_context = completion_create_params.get("authorization_context", {})
+    mcp_config = MCPConfig(
+        forwarded_headers=forwarded_headers,
+        authorization_context=authorization_context,
+    )
+    mcp_tools_factory = lambda: mcp_tools_context(mcp_config)
     model_name = completion_create_params.get("model")
     agent = MyAgent(
         llm=get_llm(
@@ -171,11 +182,16 @@ async def custompy_adaptor(completion_create_params, ...):
         timeout=...,
         forwarded_headers=...,
     )
+    return await agent_chat_completion_wrapper(
+        agent, completion_create_params, mcp_tools_factory
+    )
 ```
 
 Key differences:
 - `model=` parameter &rarr; `llm=get_llm(model_name=...)` parameter.
 - `_PLACEHOLDER_MODELS` filters out the `"unknown"` model placeholder sent by DataRobot.
+- MCP config and tool loading move into `custompy_adaptor`; pass an `mcp_tools_factory` to `agent_chat_completion_wrapper`.
+- `forwarded_headers` and `authorization_context` are read from `completion_create_params` (set by `custom.py`), not extracted inline.
 
 ### 7. Update tests
 

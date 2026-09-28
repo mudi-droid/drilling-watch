@@ -11,6 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import importlib
+import logging
 import os
 from pathlib import Path
 import re
@@ -21,6 +23,7 @@ import yaml  # type: ignore[import-untyped]
 import datarobot as dr
 import pulumi
 import pulumi_datarobot
+from datarobot_pulumi_utils.common import get_datarobot_url
 from datarobot_pulumi_utils.pulumi import export, resolve_execution_environment_version
 from datarobot_pulumi_utils.pulumi.custom_model_deployment import CustomModelDeployment
 from datarobot_pulumi_utils.pulumi.stack import PROJECT_NAME
@@ -35,41 +38,35 @@ from . import project_dir, use_case
 
 from .llm import custom_model_runtime_parameters as llm_custom_model_runtime_parameters
 
+logger = logging.getLogger(__name__)
+
 DEFAULT_EXECUTION_ENVIRONMENT = "Python 3.11 GenAI Agents"
 
 # Toggle for High Availability (HA) and Load Balancing configuration for agent deployment
 # To enable HA mode: Add ENABLE_AGENT_HA_MODE="true" to your .env file in the project root
-# When enabled: workers=5, resource_bundle=cpu.5xlarge, replicas=2, max_computes=4
-# When disabled (default): workers=2, resource_bundle=cpu.3xlarge, replicas=1, max_computes=2
+# When enabled: workers=5, resource_bundle=cpu.3xlarge, replicas=2, max_computes=4
+# When disabled (default): workers=2, resource_bundle=cpu.xlarge, replicas=1, max_computes=2
 ENABLE_AGENT_HA_MODE = os.environ.get("ENABLE_AGENT_HA_MODE", "false").lower() == "true"
 
-# Custom Model DRUM runtime parameters (concurrency configuration)
+# Custom Model runtime parameters (concurrency configuration)
 DEFAULT_CUSTOM_MODEL_WORKERS: Final[str] = "5" if ENABLE_AGENT_HA_MODE else "2"
-DEFAULT_DRUM_SERVER_TYPE: Final[str] = "gunicorn"
-DEFAULT_DRUM_GUNICORN_WORKER_CLASS: Final[str] = "sync"
-DEFAULT_DRUM_WORKER_CONNECTIONS: Final[str] = "1"
-# Default gunicorn timeout in current DRUM is 2 mins
-DEFAULT_DRUM_CLIENT_REQUEST_TIMEOUT: Final[str] = "300"
-
-# DRUM runtime parameters that are safe to include defaultValue in metadata
-DRUM_PARAMS_WITH_DEFAULTS: Final[set[str]] = {
-    "CUSTOM_MODEL_WORKERS",
-    "DRUM_SERVER_TYPE",
-    "DRUM_GUNICORN_WORKER_CLASS",
-    "DRUM_WORKER_CONNECTIONS",
-    "DRUM_CLIENT_REQUEST_TIMEOUT",
-}
-
+# Gunicorn worker timeout (seconds) for the dragent front end, read by datarobot-genai.
+# Raised above gunicorn's 30s default so long agent turns aren't killed mid-stream.
+DEFAULT_AGENT_GUNICORN_WORKER_TIMEOUT: Final[str] = "600"
 # Custom Model resource bundle configuration
-DEFAULT_AGENT_RESOURCE_BUNDLE_ID: Final[str] = (
-    "cpu.5xlarge" if ENABLE_AGENT_HA_MODE else "cpu.3xlarge"
+DEFAULT_AGENT_RESOURCE_BUNDLE_ID: str = (
+    "cpu.3xlarge" if ENABLE_AGENT_HA_MODE else "cpu.xlarge"
 )
 DEFAULT_AGENT_REPLICAS: Final[int] = 2 if ENABLE_AGENT_HA_MODE else 1
-
 # Agent deployment configuration (HPA autoscaling)
 DEFAULT_AGENT_DEPLOYMENT_MIN_COMPUTES: Final[int] = 0
 DEFAULT_AGENT_DEPLOYMENT_MAX_COMPUTES: Final[int] = 4 if ENABLE_AGENT_HA_MODE else 2
 
+# Runtime parameters that are safe to include defaultValue in metadata
+SERVER_PARAMS_WITH_DEFAULTS: Final[set[str]] = {
+    "CUSTOM_MODEL_WORKERS",
+    "AGENT_GUNICORN_WORKER_TIMEOUT",
+}
 
 EXCLUDE_PATTERNS = [
     re.compile(pattern)
@@ -85,6 +82,7 @@ EXCLUDE_PATTERNS = [
         r".*\.pytest_cache/.*",
         r".*\.uv/.*",
         r".*docker_context/.*",
+        r".*\.env(?:\.[A-Za-z0-9_-]+)*$",
     ]
 ]
 
@@ -106,14 +104,28 @@ agent_application_name: str = "agent"
 agent_asset_name: str = f"[{PROJECT_NAME}] [agent]"
 agent_application_path = project_dir.parent / "agent"
 
-_is_dragent_server_enabled = (
-    os.environ.get("ENABLE_DRAGENT_SERVER", "").strip().lower() == "true"
-)
+
+def _find_workflow_yaml() -> Path | None:
+    """Locate workflow.yaml for the agent.
+
+    Checks the agent root directory first, then falls back to the agent/ subdirectory.
+    """
+    base = project_dir.parent / "agent"
+
+    primary = base / "workflow.yaml"
+    if primary.exists():
+        return primary
+
+    fallback = base / "agent" / "workflow.yaml"
+    if fallback.exists():
+        return fallback
+
+    return None
 
 
 def _check_a2a_server_enabled() -> bool:
-    workflow_yaml_path = project_dir.parent / "agent" / "agent" / "workflow.yaml"
-    if not workflow_yaml_path.exists():
+    workflow_yaml_path = _find_workflow_yaml()
+    if workflow_yaml_path is None:
         return False
     with open(workflow_yaml_path) as f:
         workflow_config = yaml.safe_load(f) or {}
@@ -122,28 +134,6 @@ def _check_a2a_server_enabled() -> bool:
 
 
 _is_a2a_server_enabled = _check_a2a_server_enabled()
-
-
-def _check_okta_xaa_credentials_needed() -> bool:
-    """Check if Okta XAA client credentials (PRINCIPAL_ID, PRIVATE_JWK) are needed.
-
-    These are required when the agent uses the okta_cross_app_access auth provider
-    to call remote XAA-protected agents. Server-side cross_application_access config
-    only advertises XAA requirements on the agent card and does not need these credentials.
-    """
-    workflow_yaml_path = project_dir.parent / "agent" / "agent" / "workflow.yaml"
-    if not workflow_yaml_path.exists():
-        return False
-    with open(workflow_yaml_path) as f:
-        workflow_config = yaml.safe_load(f) or {}
-    auth_section = workflow_config.get("authentication") or {}
-    return any(
-        isinstance(cfg, dict) and cfg.get("_type") == "okta_cross_app_access"
-        for cfg in auth_section.values()
-    )
-
-
-_is_okta_xaa_credentials_needed = _check_okta_xaa_credentials_needed()
 
 
 def _generate_metadata_yaml(
@@ -170,12 +160,12 @@ def _generate_metadata_yaml(
             "fieldName": param.key,
             "type": param.type,
         }
-        # Only include defaultValue for safe parameters (allowlisted DRUM params)
+        # Only include defaultValue for safe parameters (allowlisted params)
         if (
             hasattr(param, "value")
             and param.value
             and not isinstance(param.value, pulumi.Output)
-            and param.key in DRUM_PARAMS_WITH_DEFAULTS
+            and param.key in SERVER_PARAMS_WITH_DEFAULTS
         ):
             param_def["defaultValue"] = param.value
         runtime_param_defs.append(param_def)
@@ -267,13 +257,12 @@ def maybe_import_from_module(module: str, object_name: str) -> Optional[Any]:
         return None
 
     try:
-        import importlib
-
         # Ensure relative import format
         module_path = module if module.startswith(".") else f".{module}"
         imported_module = importlib.import_module(module_path, package=__package__)
         return getattr(imported_module, object_name, None)
-    except (ImportError, AttributeError):
+    except (ImportError, AttributeError) as exc:
+        logger.debug("Skipping module '%s' due to import error: %s", module, exc)
         return None
 
 
@@ -337,21 +326,22 @@ def get_mcp_runtime_parameters_from_env() -> list[
     return mcp_runtime_parameters
 
 
+# Co-deployed MCP is auto-wired by this name; renamed/extra MCP → env vars.
+MCP_MODULE_NAME: Final[str] = "mcp_server"
+
+
 def get_mcp_custom_model_runtime_parameters() -> list[
     pulumi_datarobot.CustomModelRuntimeParameterValueArgs
 ]:
     """
-    Load MCP runtime parameters from the MCP Deployment module if available,
-    otherwise fall back to environment variables.
+    Load MCP runtime parameters from the conventionally-named MCP module when it
+    is present in the project, otherwise fall back to environment variables.
     """
-    mcp_module = "mcp_server"
-
     mcp_params = maybe_import_from_module(
-        mcp_module, "mcp_custom_model_runtime_parameters"
+        MCP_MODULE_NAME, "mcp_custom_model_runtime_parameters"
     )
     if mcp_params is not None:
         return mcp_params
-
     return get_mcp_runtime_parameters_from_env()
 
 
@@ -473,7 +463,7 @@ agent_runtime_parameter_values: list[
     pulumi_datarobot.CustomModelRuntimeParameterValueArgs
 ] = [] + llm_custom_model_runtime_parameters + get_mcp_custom_model_runtime_parameters()
 
-# DRUM runtime parameters for concurrency configuration
+# Server runtime parameters for concurrency configuration
 agent_runtime_parameter_values.extend(
     [
         pulumi_datarobot.CustomModelRuntimeParameterValueArgs(
@@ -482,24 +472,9 @@ agent_runtime_parameter_values.extend(
             value=DEFAULT_CUSTOM_MODEL_WORKERS,
         ),
         pulumi_datarobot.CustomModelRuntimeParameterValueArgs(
-            key="DRUM_SERVER_TYPE",
-            type="string",
-            value=DEFAULT_DRUM_SERVER_TYPE,
-        ),
-        pulumi_datarobot.CustomModelRuntimeParameterValueArgs(
-            key="DRUM_GUNICORN_WORKER_CLASS",
-            type="string",
-            value=DEFAULT_DRUM_GUNICORN_WORKER_CLASS,
-        ),
-        pulumi_datarobot.CustomModelRuntimeParameterValueArgs(
-            key="DRUM_WORKER_CONNECTIONS",
-            type="numeric",
-            value=DEFAULT_DRUM_WORKER_CONNECTIONS,
-        ),
-        pulumi_datarobot.CustomModelRuntimeParameterValueArgs(
-            key="DRUM_CLIENT_REQUEST_TIMEOUT",
-            type="numeric",
-            value=DEFAULT_DRUM_CLIENT_REQUEST_TIMEOUT,
+            key="AGENT_GUNICORN_WORKER_TIMEOUT",
+            type="string",  # string is type-agnostic; numeric fails str settings fields
+            value=DEFAULT_AGENT_GUNICORN_WORKER_TIMEOUT,
         ),
     ]
 )
@@ -522,45 +497,34 @@ if session_secret_key := os.environ.get(SESSION_SECRET_KEY):
         ),
     )
 
-# Handle Okta XAA credentials for A2A authentication
-if _is_okta_xaa_credentials_needed:
-    PRINCIPAL_ID_KEY: Final[str] = "PRINCIPAL_ID"
-    principal_id = os.environ.get(PRINCIPAL_ID_KEY, "")
-    if principal_id:
-        agent_runtime_parameter_values.append(
-            pulumi_datarobot.CustomModelRuntimeParameterValueArgs(
-                key=PRINCIPAL_ID_KEY,
-                type="string",
-                value=principal_id,
-            ),
-        )
-        pulumi.info(f"XAA configured with PRINCIPAL_ID: {principal_id}")
-
-    PRIVATE_JWK_KEY: Final[str] = "PRIVATE_JWK"
-    private_jwk = os.environ.get(PRIVATE_JWK_KEY)
-    if private_jwk:
-        private_jwk_cred = pulumi_datarobot.ApiTokenCredential(
-            agent_asset_name + " Private JWK",
-            args=pulumi_datarobot.ApiTokenCredentialArgs(api_token=str(private_jwk)),
-        )
-        agent_runtime_parameter_values.append(
-            pulumi_datarobot.CustomModelRuntimeParameterValueArgs(
-                type="credential",
-                key=PRIVATE_JWK_KEY,
-                value=private_jwk_cred.id,
-            ),
-        )
-        pulumi.info("XAA configured with PRIVATE_JWK credential")
-
-if _is_dragent_server_enabled:
-    enable_dragent_server_runtime_param = (
+IDP_AGENT_ID_PARAM: Final[str] = "IDP_AGENT_ID"
+idp_agent_id = os.environ.get(IDP_AGENT_ID_PARAM, "")
+if idp_agent_id:
+    agent_runtime_parameter_values.append(
         pulumi_datarobot.CustomModelRuntimeParameterValueArgs(
-            key="ENABLE_DRAGENT_SERVER",
-            type="boolean",
-            value="true",
-        )
+            key=IDP_AGENT_ID_PARAM,
+            type="string",
+            value=idp_agent_id,
+        ),
     )
-    agent_runtime_parameter_values.append(enable_dragent_server_runtime_param)
+    pulumi.info(f"Configured with IDP_AGENT_ID: {idp_agent_id}")
+
+
+PRIVATE_JWK_PARAM: Final[str] = "IDP_AGENT_PRIVATE_KEY_JWK"
+private_jwk = os.environ.get(PRIVATE_JWK_PARAM)
+if private_jwk:
+    private_jwk_cred = pulumi_datarobot.ApiTokenCredential(
+        agent_asset_name + " Private JWK",
+        args=pulumi_datarobot.ApiTokenCredentialArgs(api_token=str(private_jwk)),
+    )
+    agent_runtime_parameter_values.append(
+        pulumi_datarobot.CustomModelRuntimeParameterValueArgs(
+            type="credential",
+            key=PRIVATE_JWK_PARAM,
+            value=private_jwk_cred.id,
+        ),
+    )
+    pulumi.info("Configured with IDP_AGENT_PRIVATE_KEY_JWK credential")
 
 agent_custom_model_files = get_custom_model_files(
     custom_model_folder=str(agent_application_path),
@@ -582,10 +546,11 @@ agent_custom_model = pulumi_datarobot.CustomModel(
     runtime_parameter_values=agent_runtime_parameter_values,
 )
 
+_dr_url = get_datarobot_url()
+_dr_web_url = _dr_url.removesuffix("/api/v2")
+
 agent_custom_model_endpoint = agent_custom_model.id.apply(
-    lambda id: (
-        f"{os.getenv('DATAROBOT_ENDPOINT')}/genai/agents/fromCustomModel/{id}/chat/"
-    )
+    lambda id: f"{_dr_url}/genai/agents/fromCustomModel/{id}/chat/"
 )
 
 agent_playground = pulumi_datarobot.Playground(
@@ -607,15 +572,9 @@ agent_blueprint = pulumi_datarobot.LlmBlueprint(
     prompt_type="ONE_TIME_PROMPT",
 )
 
-datarobot_url = (
-    os.getenv("DATAROBOT_ENDPOINT", "https://app.datarobot.com/api/v2")
-    .rstrip("/")
-    .rstrip("/api/v2")
-)
-
 agent_playground_url = pulumi.Output.format(
     "{0}/usecases/{1}/agentic-playgrounds/{2}/comparison/chats",
-    datarobot_url,
+    _dr_web_url,
     use_case.id,
     agent_playground.id,
 )
@@ -696,21 +655,13 @@ if os.environ.get("AGENT_DEPLOY") != "0":
 
     agent_agent_deployment_id = agent_agent_deployment.id.apply(lambda id: f"{id}")
     agent_deployment_endpoint = agent_agent_deployment.id.apply(
-        lambda id: (
-            f"{os.getenv('DATAROBOT_ENDPOINT')}/deployments/{id}/directAccess"
-            if _is_dragent_server_enabled
-            else f"{os.getenv('DATAROBOT_ENDPOINT')}/deployments/{id}"
-        )
+        lambda id: f"{_dr_url}/deployments/{id}/directAccess"
     )
     agent_deployment_completions_endpoint = agent_agent_deployment.id.apply(
-        lambda id: (
-            f"{os.getenv('DATAROBOT_ENDPOINT')}/deployments/{id}/chat/completions"
-        )
+        lambda id: f"{_dr_url}/deployments/{id}/chat/completions"
     )
     agent_deployment_a2a_endpoint = agent_agent_deployment.id.apply(
-        lambda id: (
-            f"{os.getenv('DATAROBOT_ENDPOINT')}/deployments/{id}/directAccess/a2a/"
-        )
+        lambda id: f"{_dr_url}/deployments/{id}/directAccess/a2a/"
     )
 
     export(
@@ -734,14 +685,6 @@ agent_app_runtime_parameters = [
         value=agent_deployment_endpoint,
     ),
 ]
-if _is_dragent_server_enabled:
-    agent_app_runtime_parameters.append(
-        pulumi_datarobot.ApplicationSourceRuntimeParameterValueArgs(
-            key="ENABLE_DRAGENT_SERVER",
-            type="boolean",
-            value="true",
-        ),
-    )
 
 agent_agent_runtime_parameters = [
     pulumi_datarobot.CustomModelRuntimeParameterValueArgs(
@@ -755,7 +698,7 @@ agent_agent_runtime_parameters = [
         value=agent_deployment_endpoint,
     ),
 ]
-if _is_dragent_server_enabled and _is_a2a_server_enabled:
+if _is_a2a_server_enabled:
     agent_agent_runtime_parameters.append(
         pulumi_datarobot.CustomModelRuntimeParameterValueArgs(
             key=agent_application_name.upper() + "_A2A_ENDPOINT",

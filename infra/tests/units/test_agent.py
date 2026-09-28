@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import asyncio
 import sys
 import os
 from pathlib import Path
@@ -21,13 +22,20 @@ from collections import namedtuple
 # Ensure the test directory is in sys.path for proper imports
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-AGENT_MEMORY_TTL_SECONDS = "AGENT_MEMORY_TTL_SECONDS"
+AGENT_MEMORY_TTL_DAYS = "AGENT_MEMORY_TTL_DAYS"
 
 
 # Patch all Pulumi resources and functions used in the module
 @pytest.fixture(autouse=True)
 def pulumi_mocks(monkeypatch, tmp_path):
+    # Python 3.14+ no longer auto-creates an event loop on the main thread, but
+    # Pulumi resource registration requires one when infra is first imported.
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     monkeypatch.setenv("PULUMI_STACK_CONTEXT", "unittest")
+    # Neutralize the module-level export() calls in infra.__init__ before the
+    # first infra import below triggers them outside a pulumi Stack context.
+    monkeypatch.setattr("datarobot_pulumi_utils.pulumi.export", MagicMock())
     # Mock infra.__init__ exported objects
     mock_use_case = MagicMock()
     mock_use_case.id = "mock-use-case-id"
@@ -39,9 +47,9 @@ def pulumi_mocks(monkeypatch, tmp_path):
     # interface required for this module.
     mock_llm_module = MagicMock()
     mock_llm_module.custom_model_runtime_parameters = []
-    monkeypatch.setitem(sys.modules, "infra.llm", mock_llm_module)
-    # Mock out the MCP Server and just expose the runtime parameters as it is the only public
-    # interface required for this module.
+    monkeypatch.setitem(sys.modules, "infra.", mock_llm_module)
+    # Stub infra.mcp_server so generic tests stay MCP-agnostic; importing the real module
+    # runs its module-level Pulumi resource registration and breaks them.
     mock_mcp_module = MagicMock()
     mock_mcp_module.mcp_custom_model_runtime_parameters = []
     monkeypatch.setitem(sys.modules, "infra.mcp_server", mock_mcp_module)
@@ -64,7 +72,7 @@ def pulumi_mocks(monkeypatch, tmp_path):
     monkeypatch.setattr(
         "pulumi_datarobot.ApplicationSourceRuntimeParameterValueArgs", MagicMock()
     )
-
+    monkeypatch.setattr("pulumi_datarobot.MemorySpace", MagicMock())
     # Mock CustomModelRuntimeParameterValueArgs to return simple namedtuple objects
     # Namedtuples are YAML-safe and have the attributes we need
     RuntimeParam = namedtuple(
@@ -111,30 +119,45 @@ def pulumi_mocks(monkeypatch, tmp_path):
         MagicMock(return_value=_default_ee_version),
     )
 
-    # Mock Output to behave like a Pulumi Output with .apply(), support subscript notation, and from_input
-    class MockOutput(MagicMock):
-        def __new__(cls, val=None, *args, **kwargs):
-            m = super().__new__(cls)
-            m.apply = MagicMock(side_effect=lambda fn: fn(val))
-            return m
+    # Mock Output to behave like a Pulumi Output with .apply(), from_input, and all.
+    _mock_output_format = MagicMock()
+
+    class MockOutput:
+        def __init__(self, val=None):
+            self._val = val
+
+        def apply(self, fn):
+            if isinstance(self._val, list):
+                return MockOutput(fn(self._val))
+            return MockOutput(fn(self._val))
+
+        @classmethod
+        def from_input(cls, val):
+            return cls(val or "")
+
+        @classmethod
+        def all(cls, *outputs):
+            combined = cls(None)
+
+            def lazy_apply(fn):
+                return cls("output-all-applied")
+
+            combined.apply = lazy_apply  # type: ignore[method-assign]
+            return combined
+
+        format = _mock_output_format
 
         @classmethod
         def __class_getitem__(cls, item):
             return cls
 
-    # Set from_input() and format() as class methods that can be tracked
-    MockOutput.from_input = MagicMock()
-    MockOutput.format = MagicMock()
     monkeypatch.setattr("pulumi.Output", MockOutput)
 
     # Mock ApiTokenCredential to return a mock with .id as a pulumi.Output
     # This prevents MagicMock objects from being serialized to YAML
     def create_api_token_credential(*args, **kwargs):
         credential = MagicMock()
-        # Create a mock that will be recognized as pulumi.Output by isinstance check
-        output_mock = MagicMock(spec=MockOutput)
-        output_mock.__class__ = MockOutput
-        credential.id = output_mock
+        credential.id = MockOutput("mock-credential-id")
         return credential
 
     monkeypatch.setattr(
@@ -143,6 +166,8 @@ def pulumi_mocks(monkeypatch, tmp_path):
 
     yield
     patcher.stop()
+    loop.close()
+    asyncio.set_event_loop(None)
 
 
 def test_execution_environment_not_set_and_docker_context(monkeypatch):
@@ -182,11 +207,13 @@ def test_execution_environment_not_set_with_docker_image(monkeypatch):
     """Test execution environment creation when DATAROBOT_DEFAULT_EXECUTION_ENVIRONMENT is not set and docker_context.tar.gz exists"""
     monkeypatch.delenv("DATAROBOT_DEFAULT_EXECUTION_ENVIRONMENT", raising=False)
 
-    # Mock os.path.exists to return True for docker_context.tar.gz
+    # Python 3.14 pathlib.Path.exists() passes a Path into os.path.exists.
+    real_exists = os.path.exists
+
     def mock_exists(path):
-        if path.endswith("docker_context.tar.gz"):
+        if os.fspath(path).endswith("docker_context.tar.gz"):
             return True
-        return False
+        return real_exists(path)
 
     monkeypatch.setattr("os.path.exists", mock_exists)
 
@@ -259,7 +286,7 @@ def test_execution_environment_pinned_set(monkeypatch):
     )
     monkeypatch.setenv(
         "DATAROBOT_DEFAULT_EXECUTION_ENVIRONMENT_VERSION_ID",
-        "69e2134aa5df12076d70afe7",
+        "6a4e0e5874d3a4076d933c72",
     )
 
     import importlib
@@ -325,7 +352,7 @@ def test_resolve_execution_environment_version_not_found_returns_none(monkeypatc
 
     monkeypatch.setenv(
         "DATAROBOT_DEFAULT_EXECUTION_ENVIRONMENT_VERSION_ID",
-        "69e2134aa5df12076d70afe7",
+        "6a4e0e5874d3a4076d933c72",
     )
     monkeypatch.setattr(
         "datarobot.ExecutionEnvironmentVersion.get",
@@ -340,7 +367,7 @@ def test_resolve_execution_environment_version_not_found_returns_none(monkeypatc
     assert version_id is None
     agent_infra.pulumi.warn.assert_called_once()
     call_msg = agent_infra.pulumi.warn.call_args[0][0]
-    assert "69e2134aa5df12076d70afe7" in call_msg
+    assert "6a4e0e5874d3a4076d933c72" in call_msg
     assert "using latest" in call_msg
 
 
@@ -351,10 +378,10 @@ def test_resolve_execution_environment_version_found(monkeypatch):
 
     monkeypatch.setenv(
         "DATAROBOT_DEFAULT_EXECUTION_ENVIRONMENT_VERSION_ID",
-        "abcdef0123456789abcdef01",
+        "6a4e0e5874d3a4076d933c72",
     )
     mock_version = MagicMock()
-    mock_version.id = "abcdef0123456789abcdef01"
+    mock_version.id = "6a4e0e5874d3a4076d933c72"
     mock_version.build_status = EXECUTION_ENVIRONMENT_VERSION_BUILD_STATUS.SUCCESS
     monkeypatch.setattr(
         "datarobot.ExecutionEnvironmentVersion.get",
@@ -366,7 +393,7 @@ def test_resolve_execution_environment_version_found(monkeypatch):
         "DATAROBOT_DEFAULT_EXECUTION_ENVIRONMENT_VERSION_ID",
     )
 
-    assert version_id == "abcdef0123456789abcdef01"
+    assert version_id == "6a4e0e5874d3a4076d933c72"
     agent_infra.pulumi.warn.assert_not_called()
 
 
@@ -376,10 +403,10 @@ def test_resolve_execution_environment_version_not_success_returns_none(monkeypa
 
     monkeypatch.setenv(
         "DATAROBOT_DEFAULT_EXECUTION_ENVIRONMENT_VERSION_ID",
-        "abcdef0123456789abcdef01",
+        "6a4e0e5874d3a4076d933c72",
     )
     mock_version = MagicMock()
-    mock_version.id = "abcdef0123456789abcdef01"
+    mock_version.id = "6a4e0e5874d3a4076d933c72"
     mock_version.build_status = "processing"
     monkeypatch.setattr(
         "datarobot.ExecutionEnvironmentVersion.get",
@@ -394,7 +421,7 @@ def test_resolve_execution_environment_version_not_success_returns_none(monkeypa
     assert version_id is None
     agent_infra.pulumi.warn.assert_called_once()
     call_msg = agent_infra.pulumi.warn.call_args[0][0]
-    assert "abcdef0123456789abcdef01" in call_msg
+    assert "6a4e0e5874d3a4076d933c72" in call_msg
     assert "using latest" in call_msg
 
 
@@ -436,7 +463,7 @@ def test_reset_environment_between_tests():
 def test_custom_model_created(monkeypatch):
     """Test that pulumi_datarobot.CustomModel is created with correct arguments."""
     monkeypatch.delenv("DATAROBOT_DEFAULT_EXECUTION_ENVIRONMENT", raising=False)
-    monkeypatch.delenv(AGENT_MEMORY_TTL_SECONDS, raising=False)
+    monkeypatch.delenv(AGENT_MEMORY_TTL_DAYS, raising=False)
 
     import importlib
     import infra.agent as agent_infra
@@ -468,8 +495,8 @@ def test_custom_model_created(monkeypatch):
 
     runtime_parameter_values = kwargs["runtime_parameter_values"]
 
-    # Should have 6 params: 1 SESSION_SECRET_KEY + 5 DRUM params
-    assert len(runtime_parameter_values) == 6
+    # Should have 3 params: 1 SESSION_SECRET_KEY + 2 server params
+    assert len(runtime_parameter_values) == 3
 
     # Find the SESSION_SECRET_KEY parameter
     session_secret_param = next(
@@ -479,8 +506,20 @@ def test_custom_model_created(monkeypatch):
     assert session_secret_param.type == "credential"
     assert session_secret_param.value is not None
 
+    gunicorn_timeout_param = next(
+        (
+            p
+            for p in runtime_parameter_values
+            if p.key == "AGENT_GUNICORN_WORKER_TIMEOUT"
+        ),
+        None,
+    )
+    assert gunicorn_timeout_param is not None
+    assert gunicorn_timeout_param.type == "string"
+    assert gunicorn_timeout_param.value == "600"
+
     memory_ttl_param = next(
-        (p for p in runtime_parameter_values if p.key == AGENT_MEMORY_TTL_SECONDS),
+        (p for p in runtime_parameter_values if p.key == AGENT_MEMORY_TTL_DAYS),
         None,
     )
     assert memory_ttl_param is None
@@ -534,8 +573,8 @@ def test_custom_model_resource_bundle_and_replicas(monkeypatch):
     agent_infra.pulumi_datarobot.CustomModel.assert_called_once()
     args, kwargs = agent_infra.pulumi_datarobot.CustomModel.call_args
 
-    # Verify resource_bundle_id is set to cpu.3xlarge (non-HA default)
-    assert kwargs["resource_bundle_id"] == "cpu.3xlarge"
+    # Verify resource_bundle_id is set to cpu.xlarge (non-HA default)
+    assert kwargs["resource_bundle_id"] == "cpu.xlarge"
 
     # Verify replicas is set to 1
     assert kwargs["replicas"] == 1
@@ -554,7 +593,7 @@ def test_custom_model_resource_bundle_and_replicas_ha_mode(monkeypatch):
 
     agent_infra.pulumi_datarobot.CustomModel.assert_called_once()
     args, kwargs = agent_infra.pulumi_datarobot.CustomModel.call_args
-    assert kwargs["resource_bundle_id"] == "cpu.5xlarge"
+    assert kwargs["resource_bundle_id"] == "cpu.3xlarge"
     assert kwargs["replicas"] == 2
 
 
@@ -571,6 +610,7 @@ def test_agentic_playground_and_blueprint_created(monkeypatch):
     agent_infra.pulumi_datarobot.Playground.reset_mock()
     agent_infra.pulumi_datarobot.LlmBlueprint.reset_mock()
     agent_infra.pulumi.export.reset_mock()
+    agent_infra.pulumi.Output.format.reset_mock()
     importlib.reload(agent_infra)
 
     # Check that Agentic Playground was created
@@ -599,9 +639,13 @@ def test_agentic_playground_and_blueprint_created(monkeypatch):
     assert "Agent Playground URL " + agent_infra.agent_asset_name in export_names  # fmt: skip
 
     # Check the format of the URL
-    agent_infra.pulumi.Output.format.assert_any_call(
+    from datarobot_pulumi_utils.common import get_datarobot_url
+
+    expected_web_url = get_datarobot_url().removesuffix("/api/v2")
+    agent_infra.pulumi.Output.format.assert_called_once()
+    assert agent_infra.pulumi.Output.format.call_args.args == (
         "{0}/usecases/{1}/agentic-playgrounds/{2}/comparison/chats",
-        "https://example.datarobot.com",
+        expected_web_url,
         "mock-use-case-id",
         agent_infra.agent_playground.id,
     )
@@ -845,7 +889,7 @@ class TestEnableAgentHAMode:
 
         assert agent_infra.ENABLE_AGENT_HA_MODE is False
         assert agent_infra.DEFAULT_CUSTOM_MODEL_WORKERS == "2"
-        assert agent_infra.DEFAULT_AGENT_RESOURCE_BUNDLE_ID == "cpu.3xlarge"
+        assert agent_infra.DEFAULT_AGENT_RESOURCE_BUNDLE_ID == "cpu.xlarge"
         assert agent_infra.DEFAULT_AGENT_REPLICAS == 1
         assert agent_infra.DEFAULT_AGENT_DEPLOYMENT_MAX_COMPUTES == 2
 
@@ -859,7 +903,7 @@ class TestEnableAgentHAMode:
 
         assert agent_infra.ENABLE_AGENT_HA_MODE is False
         assert agent_infra.DEFAULT_CUSTOM_MODEL_WORKERS == "2"
-        assert agent_infra.DEFAULT_AGENT_RESOURCE_BUNDLE_ID == "cpu.3xlarge"
+        assert agent_infra.DEFAULT_AGENT_RESOURCE_BUNDLE_ID == "cpu.xlarge"
         assert agent_infra.DEFAULT_AGENT_REPLICAS == 1
         assert agent_infra.DEFAULT_AGENT_DEPLOYMENT_MAX_COMPUTES == 2
 
@@ -873,7 +917,7 @@ class TestEnableAgentHAMode:
 
         assert agent_infra.ENABLE_AGENT_HA_MODE is True
         assert agent_infra.DEFAULT_CUSTOM_MODEL_WORKERS == "5"
-        assert agent_infra.DEFAULT_AGENT_RESOURCE_BUNDLE_ID == "cpu.5xlarge"
+        assert agent_infra.DEFAULT_AGENT_RESOURCE_BUNDLE_ID == "cpu.3xlarge"
         assert agent_infra.DEFAULT_AGENT_REPLICAS == 2
         assert agent_infra.DEFAULT_AGENT_DEPLOYMENT_MAX_COMPUTES == 4
 
@@ -897,12 +941,12 @@ class TestEnableAgentHAMode:
             assert agent_infra.ENABLE_AGENT_HA_MODE is expected
             if expected:
                 assert agent_infra.DEFAULT_CUSTOM_MODEL_WORKERS == "5"
-                assert agent_infra.DEFAULT_AGENT_RESOURCE_BUNDLE_ID == "cpu.5xlarge"
+                assert agent_infra.DEFAULT_AGENT_RESOURCE_BUNDLE_ID == "cpu.3xlarge"
                 assert agent_infra.DEFAULT_AGENT_REPLICAS == 2
                 assert agent_infra.DEFAULT_AGENT_DEPLOYMENT_MAX_COMPUTES == 4
             else:
                 assert agent_infra.DEFAULT_CUSTOM_MODEL_WORKERS == "2"
-                assert agent_infra.DEFAULT_AGENT_RESOURCE_BUNDLE_ID == "cpu.3xlarge"
+                assert agent_infra.DEFAULT_AGENT_RESOURCE_BUNDLE_ID == "cpu.xlarge"
                 assert agent_infra.DEFAULT_AGENT_REPLICAS == 1
                 assert agent_infra.DEFAULT_AGENT_DEPLOYMENT_MAX_COMPUTES == 2
 
@@ -929,17 +973,23 @@ class TestGetCustomModelFiles:
         # Create files that should be excluded
         (tmp_path / "file1.py").write_text("print('hi')")
         (tmp_path / ".DS_Store").write_text("")
+        (tmp_path / ".env").write_text("SECRET=token")
+        (tmp_path / ".env.local").write_text("SECRET=token")
+        (tmp_path / ".environment").write_text("not a secret file")
         (tmp_path / "__pycache__").mkdir()
         (tmp_path / "__pycache__" / "foo.pyc").write_text("")
         files = agent_infra.get_custom_model_files(str(tmp_path), [])
         file_names = [f[1] for f in files]
         assert "file1.py" in file_names
         assert ".DS_Store" not in file_names
+        assert ".env" not in file_names
+        assert ".env.local" not in file_names
+        assert ".environment" in file_names
         assert "__pycache__/foo.pyc" not in file_names
 
         # Autogenerated metadata file
         assert "model-metadata.yaml" in file_names
-        assert len(files) == 2
+        assert len(files) == 3
 
     def test_get_custom_model_files_excludes_docker_context(self, tmp_path):
         import infra.agent as agent_infra
@@ -1072,56 +1122,94 @@ name = "old-project"
 
 
 class TestMaybeImportFromModule:
-    @pytest.fixture
-    def skip_if_no_mcp(self):
-        """Skip tests if mcp module is not available."""
-        mcp_module = "mcp_server"
-        if not mcp_module:
-            pytest.skip("Skipping tests of existing MCP when module is not provided.")
-
-    @pytest.mark.usefixtures("skip_if_no_mcp")
-    def test_maybe_import_from_module_success(self):
-        """Test that maybe_import_from_module successfully imports an existing module."""
+    def test_empty_module_name_returns_none(self):
+        """An empty module name short-circuits to None."""
         import infra.agent as agent_infra
 
-        # The fixture sets up the mocked MCP module with mcp_custom_model_runtime_parameters
-        result = agent_infra.maybe_import_from_module(
-            "mcp_server", "mcp_custom_model_runtime_parameters"
-        )
-        assert result is not None
+        assert agent_infra.maybe_import_from_module("", "anything") is None
 
-    def test_maybe_import_from_module_missing_module(self, monkeypatch):
-        """Test that maybe_import_from_module returns None when module is not available."""
+    def test_returns_object_when_present(self, monkeypatch):
+        """Returns the named attribute when the module imports and defines it."""
+        import importlib
+
         import infra.agent as agent_infra
 
-        # Mock importlib.import_module to raise ImportError
-        def mock_import_module(name, package=None):
-            raise ImportError(f"No module named '{name}'")
+        module = MagicMock()
+        module.some_export = ["value"]
+        real_import_module = importlib.import_module
 
-        monkeypatch.setattr("importlib.import_module", mock_import_module)
+        def fake_import_module(name, package=None):
+            if name == ".sibling":
+                return module
+            return real_import_module(name, package)
 
-        # Attempt to import from the non-existent module
-        result = agent_infra.maybe_import_from_module(
-            "mcp_server", "mcp_custom_model_runtime_parameters"
-        )
-        assert result is None
+        monkeypatch.setattr(importlib, "import_module", fake_import_module)
+        result = agent_infra.maybe_import_from_module("sibling", "some_export")
+        assert result == ["value"]
 
-    def test_maybe_import_from_module_empty_module_name(self):
-        """Test that maybe_import_from_module returns None with empty module name."""
+    def test_absent_module_returns_none(self, monkeypatch):
+        """An absent module (ImportError) is treated as 'not present' -> None."""
+        import importlib
+
         import infra.agent as agent_infra
 
-        result = agent_infra.maybe_import_from_module("", "some_attribute")
-        assert result is None
+        real_import_module = importlib.import_module
+
+        def fake_import_module(name, package=None):
+            if name == ".absent":
+                raise ModuleNotFoundError("no module named absent")
+            return real_import_module(name, package)
+
+        monkeypatch.setattr(importlib, "import_module", fake_import_module)
+        assert agent_infra.maybe_import_from_module("absent", "x") is None
+
+    def test_unexpected_import_error_propagates(self, monkeypatch):
+        """A real error inside a present module is NOT swallowed -> surfaces."""
+        import importlib
+
+        import infra.agent as agent_infra
+
+        real_import_module = importlib.import_module
+
+        def fake_import_module(name, package=None):
+            if name == ".broken":
+                raise RuntimeError("boom")
+            return real_import_module(name, package)
+
+        monkeypatch.setattr(importlib, "import_module", fake_import_module)
+        with pytest.raises(RuntimeError, match="boom"):
+            agent_infra.maybe_import_from_module("broken", "x")
 
 
 class TestGetMcpCustomModelRuntimeParameters:
-    def test_get_mcp_custom_model_runtime_parameters_from_module(self):
-        """Test that MCP runtime parameters are loaded from the module when available."""
+    def test_get_mcp_custom_model_runtime_parameters_from_module(self, monkeypatch):
+        """MCP params come from the conventionally-named MCP module when present."""
         import infra.agent as agent_infra
 
-        result = agent_infra.get_mcp_custom_model_runtime_parameters()
-        # The fixture sets up a mock module with empty list
-        assert isinstance(result, list)
+        sentinel = ["mcp-runtime-param-sentinel"]
+        calls = {}
+
+        def fake_maybe_import(module, object_name):
+            calls["module"] = module
+            calls["object_name"] = object_name
+            return sentinel
+
+        monkeypatch.setattr(agent_infra, "maybe_import_from_module", fake_maybe_import)
+        assert agent_infra.get_mcp_custom_model_runtime_parameters() == sentinel
+        # Wired by the conventional module name, like the LLM component.
+        assert calls["module"] == agent_infra.MCP_MODULE_NAME == "mcp_server"
+        assert calls["object_name"] == "mcp_custom_model_runtime_parameters"
+
+    def test_present_but_empty_mcp_module_does_not_fall_back_to_env(self, monkeypatch):
+        """A present MCP module exporting [] must NOT pull env vars (no stale-env shadowing)."""
+        import infra.agent as agent_infra
+
+        monkeypatch.setenv("MCP_DEPLOYMENT_ID", "stale-deployment-id")
+        # module present (returns []), so env must be ignored
+        monkeypatch.setattr(
+            agent_infra, "maybe_import_from_module", lambda module, object_name: []
+        )
+        assert agent_infra.get_mcp_custom_model_runtime_parameters() == []
 
     def test_get_mcp_custom_model_runtime_parameters_fallback_to_env(self, monkeypatch):
         """Test that MCP runtime parameters fall back to environment variables when module is unavailable."""
@@ -1135,11 +1223,10 @@ class TestGetMcpCustomModelRuntimeParameters:
         )
         monkeypatch.setenv("EXTERNAL_MCP_TRANSPORT", "sse")
 
-        # Mock importlib.import_module to raise ImportError
-        def mock_import_module(name, package=None):
-            raise ImportError(f"No module named '{name}'")
-
-        monkeypatch.setattr("importlib.import_module", mock_import_module)
+        # No MCP module present -> import returns None, fall back to env
+        monkeypatch.setattr(
+            agent_infra, "maybe_import_from_module", lambda module, object_name: None
+        )
 
         # Get runtime parameters - should fall back to environment variables
         result = agent_infra.get_mcp_custom_model_runtime_parameters()
@@ -1201,10 +1288,8 @@ class TestGenerateMetadataYaml:
             ),
             # Credential parameter - should NOT have defaultValue
             RuntimeParam(key="SESSION_SECRET_KEY", type="credential", value=None),
-            # DRUM numeric parameter - should HAVE defaultValue (in allowlist)
+            # numeric parameter - should HAVE defaultValue (in allowlist)
             RuntimeParam(key="CUSTOM_MODEL_WORKERS", type="numeric", value="5"),
-            # DRUM string parameter - should HAVE defaultValue (in allowlist)
-            RuntimeParam(key="DRUM_SERVER_TYPE", type="string", value="gunicorn"),
             # String parameter with special characters - should NOT have defaultValue (not in allowlist)
             RuntimeParam(
                 key="EXTERNAL_MCP_HEADERS", type="string", value='{"auth": "token"}'
@@ -1229,7 +1314,7 @@ class TestGenerateMetadataYaml:
         # Verify parameters maintain order and correct types
         params = metadata["runtimeParameterDefinitions"]
 
-        assert len(params) == 5
+        assert len(params) == 4
 
         # String parameter - should NOT have defaultValue (not in allowlist)
         assert params[0]["fieldName"] == "LLM_DEPLOYMENT_ID"
@@ -1244,26 +1329,18 @@ class TestGenerateMetadataYaml:
         assert "defaultValue" not in params[1]
         assert "credentialType" not in params[1]
 
-        # DRUM numeric parameter - should HAVE defaultValue (in allowlist)
+        # numeric parameter - should HAVE defaultValue (in allowlist)
         assert params[2]["fieldName"] == "CUSTOM_MODEL_WORKERS"
         assert params[2]["type"] == "numeric"
         assert "defaultValue" in params[2], (
-            "DRUM parameters in allowlist should have defaultValue"
+            "Parameters in allowlist should have defaultValue"
         )
         assert params[2]["defaultValue"] == "5"
 
-        # DRUM string parameter - should HAVE defaultValue (in allowlist)
-        assert params[3]["fieldName"] == "DRUM_SERVER_TYPE"
-        assert params[3]["type"] == "string"
-        assert "defaultValue" in params[3], (
-            "DRUM parameters in allowlist should have defaultValue"
-        )
-        assert params[3]["defaultValue"] == "gunicorn"
-
         # String parameter with sensitive data - should NOT have defaultValue (not in allowlist)
-        assert params[4]["fieldName"] == "EXTERNAL_MCP_HEADERS"
-        assert params[4]["type"] == "string"
-        assert "defaultValue" not in params[4], (
+        assert params[3]["fieldName"] == "EXTERNAL_MCP_HEADERS"
+        assert params[3]["type"] == "string"
+        assert "defaultValue" not in params[3], (
             "String parameters with sensitive data should not have defaultValue"
         )
 
@@ -1330,7 +1407,7 @@ class TestAgentMemoryRuntimeParameter:
     def test_ttl_runtime_parameter_excluded_when_memory_disabled(self, monkeypatch):
         """Test that the agent memory TTL runtime parameter is excluded by default."""
         monkeypatch.delenv("DATAROBOT_DEFAULT_EXECUTION_ENVIRONMENT", raising=False)
-        monkeypatch.setenv(AGENT_MEMORY_TTL_SECONDS, "86400")
+        monkeypatch.setenv(AGENT_MEMORY_TTL_DAYS, "1")
 
         import importlib
         import infra.agent as agent_infra
@@ -1341,7 +1418,7 @@ class TestAgentMemoryRuntimeParameter:
             (
                 param
                 for param in agent_infra.agent_runtime_parameter_values
-                if param.key == AGENT_MEMORY_TTL_SECONDS
+                if param.key == AGENT_MEMORY_TTL_DAYS
             ),
             None,
         )
@@ -1349,9 +1426,9 @@ class TestAgentMemoryRuntimeParameter:
         assert memory_ttl_param is None
 
 
-class TestDrumRuntimeParameters:
-    def test_drum_runtime_parameters_included(self, monkeypatch):
-        """Test that DRUM concurrency runtime parameters are included in agent_runtime_parameter_values."""
+class TestServerRuntimeParameters:
+    def test_server_runtime_parameters_included(self, monkeypatch):
+        """Test that server concurrency runtime parameters are included in agent_runtime_parameter_values."""
         monkeypatch.delenv("DATAROBOT_DEFAULT_EXECUTION_ENVIRONMENT", raising=False)
 
         import importlib
@@ -1359,45 +1436,30 @@ class TestDrumRuntimeParameters:
 
         importlib.reload(agent_infra)
 
-        # Get all DRUM-related parameters
-        drum_params = {
+        # Get all server parameters
+        server_params = {
             param.key: param
             for param in agent_infra.agent_runtime_parameter_values
             if param.key
             in [
                 "CUSTOM_MODEL_WORKERS",
-                "DRUM_SERVER_TYPE",
-                "DRUM_GUNICORN_WORKER_CLASS",
-                "DRUM_WORKER_CONNECTIONS",
-                "DRUM_CLIENT_REQUEST_TIMEOUT",
+                "AGENT_GUNICORN_WORKER_TIMEOUT",
             ]
         }
 
-        # Verify all 5 DRUM parameters are present
-        assert len(drum_params) == 5
+        # Verify all parameters are present
+        assert len(server_params) == 2
 
         # Check CUSTOM_MODEL_WORKERS
-        assert drum_params["CUSTOM_MODEL_WORKERS"].type == "numeric"
-        assert drum_params["CUSTOM_MODEL_WORKERS"].value == "2"
+        assert server_params["CUSTOM_MODEL_WORKERS"].type == "numeric"
+        assert server_params["CUSTOM_MODEL_WORKERS"].value == "2"
 
-        # Check DRUM_SERVER_TYPE
-        assert drum_params["DRUM_SERVER_TYPE"].type == "string"
-        assert drum_params["DRUM_SERVER_TYPE"].value == "gunicorn"
+        # Check AGENT_GUNICORN_WORKER_TIMEOUT
+        assert server_params["AGENT_GUNICORN_WORKER_TIMEOUT"].type == "string"
+        assert server_params["AGENT_GUNICORN_WORKER_TIMEOUT"].value == "600"
 
-        # Check DRUM_GUNICORN_WORKER_CLASS
-        assert drum_params["DRUM_GUNICORN_WORKER_CLASS"].type == "string"
-        assert drum_params["DRUM_GUNICORN_WORKER_CLASS"].value == "sync"
-
-        # Check DRUM_WORKER_CONNECTIONS
-        assert drum_params["DRUM_WORKER_CONNECTIONS"].type == "numeric"
-        assert drum_params["DRUM_WORKER_CONNECTIONS"].value == "1"
-
-        # Check DRUM_CLIENT_REQUEST_TIMEOUT
-        assert drum_params["DRUM_CLIENT_REQUEST_TIMEOUT"].type == "numeric"
-        assert drum_params["DRUM_CLIENT_REQUEST_TIMEOUT"].value == "300"
-
-    def test_drum_runtime_parameters_passed_to_custom_model(self, monkeypatch):
-        """Test that DRUM runtime parameters are passed to CustomModel."""
+    def test_server_runtime_parameters_passed_to_custom_model(self, monkeypatch):
+        """Test that server runtime parameters are passed to CustomModel."""
         monkeypatch.delenv("DATAROBOT_DEFAULT_EXECUTION_ENVIRONMENT", raising=False)
 
         import importlib
@@ -1410,13 +1472,83 @@ class TestDrumRuntimeParameters:
         _, kwargs = agent_infra.pulumi_datarobot.CustomModel.call_args
 
         runtime_params = kwargs["runtime_parameter_values"]
-        drum_keys = [
+        server_keys = [
             "CUSTOM_MODEL_WORKERS",
-            "DRUM_SERVER_TYPE",
-            "DRUM_GUNICORN_WORKER_CLASS",
-            "DRUM_WORKER_CONNECTIONS",
-            "DRUM_CLIENT_REQUEST_TIMEOUT",
+            "AGENT_GUNICORN_WORKER_TIMEOUT",
         ]
 
-        found_keys = [param.key for param in runtime_params if param.key in drum_keys]
-        assert set(found_keys) == set(drum_keys)
+        found_keys = [param.key for param in runtime_params if param.key in server_keys]
+        assert set(found_keys) == set(server_keys)
+
+
+class TestA2AEndpointRuntimeParameter:
+    """Guard against silent A2A breakage: inject the deployment A2A endpoint runtime
+    parameter when DRAgent and an A2A server block are both enabled."""
+
+    A2A_ENDPOINT_PARAM_KEY = "AGENT_A2A_ENDPOINT"
+
+    def _setup_workspace(self, tmp_path, monkeypatch, workflow_content: str):
+        """Create a project layout within tmp_path and patch project_dir accordingly.
+
+        Layout: tmp_path/project/infra  (project_dir)
+                tmp_path/project/agent/workflow.yaml
+        """
+        project_root = tmp_path / "project"
+        infra_dir = project_root / "infra"
+        infra_dir.mkdir(parents=True)
+        agent_dir = project_root / "agent"
+        agent_dir.mkdir(parents=True)
+        (agent_dir / "workflow.yaml").write_text(workflow_content)
+
+        # project_dir is imported from infra.__init__; override it so
+        # _find_workflow_yaml resolves to our temp agent directory.
+        monkeypatch.setattr("infra.project_dir", infra_dir)
+
+    def test_a2a_endpoint_param_present_when_a2a_and_dragent_enabled(
+        self, monkeypatch, tmp_path
+    ):
+        """When workflow.yaml has A2A config
+        the A2A endpoint runtime parameter must appear in agent_agent_runtime_parameters."""
+        monkeypatch.setenv("AGENT_DEPLOY", "1")
+        monkeypatch.setenv("DATAROBOT_ENDPOINT", "https://app.datarobot.com/api/v2")
+        monkeypatch.delenv("DATAROBOT_DEFAULT_EXECUTION_ENVIRONMENT", raising=False)
+
+        self._setup_workspace(
+            tmp_path,
+            monkeypatch,
+            "general:\n"
+            "  front_end:\n"
+            "    a2a:\n"
+            "      server:\n"
+            "        name: test-agent\n"
+            "        description: Test\n",
+        )
+
+        import importlib
+        import infra.agent as agent_infra
+
+        importlib.reload(agent_infra)
+
+        param_keys = [p.key for p in agent_infra.agent_agent_runtime_parameters]
+        assert self.A2A_ENDPOINT_PARAM_KEY in param_keys
+
+    def test_a2a_endpoint_param_absent_when_a2a_disabled(self, monkeypatch, tmp_path):
+        """When workflow.yaml has no A2A config, the A2A endpoint parameter must NOT
+        appear in agent_agent_runtime_parameters"""
+        monkeypatch.setenv("AGENT_DEPLOY", "1")
+        monkeypatch.setenv("DATAROBOT_ENDPOINT", "https://app.datarobot.com/api/v2")
+        monkeypatch.delenv("DATAROBOT_DEFAULT_EXECUTION_ENVIRONMENT", raising=False)
+
+        self._setup_workspace(
+            tmp_path,
+            monkeypatch,
+            "general:\n  front_end:\n    streaming: true\n",
+        )
+
+        import importlib
+        import infra.agent as agent_infra
+
+        importlib.reload(agent_infra)
+
+        param_keys = [p.key for p in agent_infra.agent_agent_runtime_parameters]
+        assert self.A2A_ENDPOINT_PARAM_KEY not in param_keys
