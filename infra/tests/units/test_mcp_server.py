@@ -11,17 +11,19 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import sys
 import os
-from pathlib import Path
-import pytest
-from unittest.mock import patch, MagicMock, PropertyMock
-from unittest.mock import Mock
+import sys
 from collections import namedtuple
+from pathlib import Path
+from unittest.mock import MagicMock, Mock, PropertyMock, patch
 
-from dev_tools.lineage.pulumi_managers import MCPToolMetadataPulumiManager
-from dev_tools.lineage.pulumi_managers import MCPPromptMetadataPulumiManager
-from dev_tools.lineage.pulumi_managers import MCPResourceMetadataPulumiManager
+import pytest
+
+from dev_tools.lineage.pulumi_managers import (
+    MCPPromptMetadataPulumiManager,
+    MCPResourceMetadataPulumiManager,
+    MCPToolMetadataPulumiManager,
+)
 
 # Ensure the test directory is in sys.path for proper imports
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -31,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 @pytest.fixture(autouse=True)
 def pulumi_mocks(monkeypatch, tmp_path):
     monkeypatch.setenv("PULUMI_STACK_CONTEXT", "unittest")
+    monkeypatch.setattr("datarobot_pulumi_utils.pulumi.export", MagicMock())
     # Mock infra.__init__ exported objects
     mock_use_case = MagicMock()
     mock_use_case.id = "mock-use-case-id"
@@ -42,10 +45,6 @@ def pulumi_mocks(monkeypatch, tmp_path):
     # deployments_application_path = project_dir.parent / "mcp_server"
     mcp_app_dir = tmp_path.parent / "mcp_server"
     mcp_app_dir.mkdir(exist_ok=True)
-    (mcp_app_dir / "metadata.yaml").write_text(
-        "---\nname: runtime-params\nruntimeParameterDefinitions:\n"
-        "{{ additional_params }}\n"
-    )
 
     # Mock user params module
     mock_user_params_module = MagicMock()
@@ -62,7 +61,6 @@ def pulumi_mocks(monkeypatch, tmp_path):
     monkeypatch.setattr("pulumi_datarobot.Deployment", MagicMock())
     monkeypatch.setattr("pulumi_datarobot.ApiTokenCredential", MagicMock())
     monkeypatch.setattr("pulumi_datarobot.ApiTokenCredentialArgs", MagicMock())
-    monkeypatch.setattr("pulumi_datarobot.AwsCredential", MagicMock())
 
     # Mock CustomModelRuntimeParameterValueArgs to return simple namedtuple objects
     RuntimeParam = namedtuple(
@@ -119,26 +117,24 @@ def pulumi_mocks(monkeypatch, tmp_path):
     monkeypatch.setattr("pulumi.Output", MockOutput)
 
     # Mock MCP metadata related module
-    monkeypatch.setattr(
-        "dev_tools.lineage.utils.is_lineage_feature_enabled",
-        Mock(return_value=True),
-    )
     monkeypatch.setattr(MCPToolMetadataPulumiManager, "load_metadata", Mock())
     monkeypatch.setattr(MCPToolMetadataPulumiManager, "create_pulumi_resources", Mock())
-    monkeypatch.setattr(MCPToolMetadataPulumiManager, "export_to_pulumi_stack", Mock())
+    monkeypatch.setattr(
+        MCPToolMetadataPulumiManager, "export_summary_to_pulumi_stack", Mock()
+    )
     monkeypatch.setattr(MCPPromptMetadataPulumiManager, "load_metadata", Mock())
     monkeypatch.setattr(
         MCPPromptMetadataPulumiManager, "create_pulumi_resources", Mock()
     )
     monkeypatch.setattr(
-        MCPPromptMetadataPulumiManager, "export_to_pulumi_stack", Mock()
+        MCPPromptMetadataPulumiManager, "export_summary_to_pulumi_stack", Mock()
     )
     monkeypatch.setattr(MCPResourceMetadataPulumiManager, "load_metadata", Mock())
     monkeypatch.setattr(
         MCPResourceMetadataPulumiManager, "create_pulumi_resources", Mock()
     )
     monkeypatch.setattr(
-        MCPResourceMetadataPulumiManager, "export_to_pulumi_stack", Mock()
+        MCPResourceMetadataPulumiManager, "export_summary_to_pulumi_stack", Mock()
     )
 
     yield
@@ -150,6 +146,7 @@ def test_execution_environment_not_set_uses_docker(monkeypatch):
     monkeypatch.delenv("DATAROBOT_DEFAULT_MCP_EXECUTION_ENVIRONMENT", raising=False)
 
     import importlib
+
     import infra.mcp_server as mcp_infra
 
     mcp_infra.pulumi_datarobot.ExecutionEnvironment.reset_mock()
@@ -178,6 +175,7 @@ def test_execution_environment_default_set(monkeypatch):
     )
 
     import importlib
+
     import infra.mcp_server as mcp_infra
 
     importlib.reload(mcp_infra)
@@ -209,6 +207,7 @@ def test_execution_environment_pinned_set(monkeypatch):
     )
 
     import importlib
+
     import infra.mcp_server as mcp_infra
 
     importlib.reload(mcp_infra)
@@ -237,6 +236,7 @@ def test_execution_environment_custom_set(monkeypatch):
     )
 
     import importlib
+
     import infra.mcp_server as mcp_infra
 
     importlib.reload(mcp_infra)
@@ -257,8 +257,9 @@ def test_execution_environment_custom_set(monkeypatch):
 
 def test_resolve_execution_environment_version_not_found_returns_none(monkeypatch):
     """When pinned EE version is not found in DataRobot, warn and return None (use latest)."""
-    import infra.mcp_server as mcp_infra
     from datarobot.errors import ClientError
+
+    import infra.mcp_server as mcp_infra
 
     monkeypatch.setenv(
         "DATAROBOT_DEFAULT_MCP_EXECUTION_ENVIRONMENT_VERSION_ID",
@@ -283,8 +284,9 @@ def test_resolve_execution_environment_version_not_found_returns_none(monkeypatc
 
 def test_resolve_execution_environment_version_found(monkeypatch):
     """When pinned version exists and build_status is SUCCESS, return its id."""
-    import infra.mcp_server as mcp_infra
     from datarobot.enums import EXECUTION_ENVIRONMENT_VERSION_BUILD_STATUS
+
+    import infra.mcp_server as mcp_infra
 
     monkeypatch.setenv(
         "DATAROBOT_DEFAULT_MCP_EXECUTION_ENVIRONMENT_VERSION_ID",
@@ -360,6 +362,7 @@ def test_reset_environment_between_tests():
     assert os.environ.get("DATAROBOT_DEFAULT_MCP_EXECUTION_ENVIRONMENT") is None
 
     import importlib
+
     import infra.mcp_server as mcp_infra
 
     importlib.reload(mcp_infra)
@@ -374,6 +377,7 @@ def test_prediction_environment_created_when_env_var_not_set(monkeypatch):
     monkeypatch.delenv("DATAROBOT_DEFAULT_PREDICTION_ENVIRONMENT", raising=False)
 
     import importlib
+
     import infra.mcp_server as mcp_infra
 
     mcp_infra.pulumi_datarobot.PredictionEnvironment.reset_mock()
@@ -390,6 +394,7 @@ def test_prediction_environment_injected_when_env_var_set(monkeypatch):
     )
 
     import importlib
+
     import infra.mcp_server as mcp_infra
 
     mcp_infra.pulumi_datarobot.PredictionEnvironment.reset_mock()
@@ -412,6 +417,7 @@ def test_custom_model_created(monkeypatch):
     monkeypatch.delenv("DATAROBOT_DEFAULT_MCP_EXECUTION_ENVIRONMENT", raising=False)
 
     import importlib
+
     import infra.mcp_server as mcp_infra
 
     mcp_infra.pulumi_datarobot.CustomModel.reset_mock()
@@ -434,38 +440,39 @@ def test_custom_model_created(monkeypatch):
 
 def test_mcp_item_lineage_metadata(monkeypatch):
     import importlib
+
     import infra.mcp_server as mcp_infra
 
     load_tool_metadata = mcp_infra.MCPToolMetadataPulumiManager.load_metadata
     create_pulumi_tool_resources = (
         mcp_infra.MCPToolMetadataPulumiManager.create_pulumi_resources
     )
-    export_tool_to_pulumi_stack = (
-        mcp_infra.MCPToolMetadataPulumiManager.export_to_pulumi_stack
+    export_tool_summary_to_pulumi_stack = (
+        mcp_infra.MCPToolMetadataPulumiManager.export_summary_to_pulumi_stack
     )
     load_prompt_metadata = mcp_infra.MCPPromptMetadataPulumiManager.load_metadata
     create_pulumi_prompt_resources = (
         mcp_infra.MCPPromptMetadataPulumiManager.create_pulumi_resources
     )
-    export_prompt_to_pulumi_stack = (
-        mcp_infra.MCPPromptMetadataPulumiManager.export_to_pulumi_stack
+    export_prompt_summary_to_pulumi_stack = (
+        mcp_infra.MCPPromptMetadataPulumiManager.export_summary_to_pulumi_stack
     )
     load_resource_metadata = mcp_infra.MCPResourceMetadataPulumiManager.load_metadata
     create_pulumi_resource_resources = (
         mcp_infra.MCPResourceMetadataPulumiManager.create_pulumi_resources
     )
-    export_resource_to_pulumi_stack = (
-        mcp_infra.MCPResourceMetadataPulumiManager.export_to_pulumi_stack
+    export_resource_summary_to_pulumi_stack = (
+        mcp_infra.MCPResourceMetadataPulumiManager.export_summary_to_pulumi_stack
     )
     load_tool_metadata.reset_mock()
     create_pulumi_tool_resources.reset_mock()
-    export_tool_to_pulumi_stack.reset_mock()
+    export_tool_summary_to_pulumi_stack.reset_mock()
     load_prompt_metadata.reset_mock()
     create_pulumi_prompt_resources.reset_mock()
-    export_prompt_to_pulumi_stack.reset_mock()
+    export_prompt_summary_to_pulumi_stack.reset_mock()
     load_resource_metadata.reset_mock()
     create_pulumi_resource_resources.reset_mock()
-    export_resource_to_pulumi_stack.reset_mock()
+    export_resource_summary_to_pulumi_stack.reset_mock()
     importlib.reload(mcp_infra)
 
     mock_custom_model = mcp_infra.pulumi_datarobot.CustomModel.return_value
@@ -481,8 +488,13 @@ def test_mcp_item_lineage_metadata(monkeypatch):
     assert actual_mcp_metadata_entities == load_tool_metadata.return_value
     assert actual_mcp_server_asset_name == expected_actual_mcp_server_asset_name
     assert actual_custom_model_version_id == mock_custom_model.version_id
-    args, _ = mcp_infra.MCPToolMetadataPulumiManager.export_to_pulumi_stack.call_args
-    (actual_mcp_metadata_pulumi_resources,) = args
+    args, _ = (
+        mcp_infra.MCPToolMetadataPulumiManager.export_summary_to_pulumi_stack.call_args
+    )
+    (
+        actual_mcp_server_asset_name,
+        actual_mcp_metadata_pulumi_resources,
+    ) = args
     assert (
         actual_mcp_metadata_pulumi_resources
         == create_pulumi_tool_resources.return_value
@@ -498,8 +510,13 @@ def test_mcp_item_lineage_metadata(monkeypatch):
     assert actual_mcp_metadata_entities == load_prompt_metadata.return_value
     assert actual_mcp_server_asset_name == expected_actual_mcp_server_asset_name
     assert actual_custom_model_version_id == mock_custom_model.version_id
-    args, _ = mcp_infra.MCPPromptMetadataPulumiManager.export_to_pulumi_stack.call_args
-    (actual_mcp_metadata_pulumi_resources,) = args
+    args, _ = (
+        mcp_infra.MCPPromptMetadataPulumiManager.export_summary_to_pulumi_stack.call_args
+    )
+    (
+        actual_mcp_server_asset_name,
+        actual_mcp_metadata_pulumi_resources,
+    ) = args
     assert (
         actual_mcp_metadata_pulumi_resources
         == create_pulumi_prompt_resources.return_value
@@ -518,9 +535,12 @@ def test_mcp_item_lineage_metadata(monkeypatch):
     assert actual_mcp_server_asset_name == expected_actual_mcp_server_asset_name
     assert actual_custom_model_version_id == mock_custom_model.version_id
     args, _ = (
-        mcp_infra.MCPResourceMetadataPulumiManager.export_to_pulumi_stack.call_args
+        mcp_infra.MCPResourceMetadataPulumiManager.export_summary_to_pulumi_stack.call_args
     )
-    (actual_mcp_metadata_pulumi_resources,) = args
+    (
+        actual_mcp_server_asset_name,
+        actual_mcp_metadata_pulumi_resources,
+    ) = args
     assert (
         actual_mcp_metadata_pulumi_resources
         == create_pulumi_resource_resources.return_value

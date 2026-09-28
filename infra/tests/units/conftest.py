@@ -11,24 +11,18 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import logging
-
-from datarobot_pulumi_utils.common.feature_flags import fetch_flag_statuses
-
-from datarobot.errors import ClientError
+import pulumi
 
 
-logger = logging.getLogger(__name__)
+class _Mocks(pulumi.runtime.Mocks):
+    def new_resource(self, args):
+        return [f"{args.name}_id", args.inputs]
+
+    def call(self, args):
+        return {}
 
 
-def is_lineage_feature_enabled() -> bool:
-    try:
-        flag_name = "ENABLE_MCP_TOOLS_GALLERY_SUPPORT"
-        flag_status = fetch_flag_statuses([flag_name])
-        return flag_status[flag_name]
-    except ClientError:
-        error_message = (
-            "Feature flag retrieval error. Feature flag evaluation falls back to False."
-        )
-        logger.warning(error_message)
-        return False
+# Module-level on purpose: this must run before pytest imports the test
+# modules, because infra.infra resolves the active stack and registers
+# Pulumi resources at import time.
+pulumi.runtime.set_mocks(_Mocks(), stack="unittest", preview=False)

@@ -63,3 +63,5 @@ runtimeParameterDefinitions:
   - fieldName: SESSION_SECRET_KEY
     type: credential
     credentialType: api_token
+  - fieldName: user_name
+    type: string
