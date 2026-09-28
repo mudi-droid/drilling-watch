@@ -67,6 +67,11 @@ general:
 llms:
   datarobot_llm:
     _type: datarobot-llm-component
+    # Named here rather than left to the environment. The upgraded config
+    # exposes the model as `_default_model`, and pydantic treats a leading
+    # underscore as private, so LLM_DEFAULT_MODEL in .env never reaches the
+    # component and the first message fails with "Model name is required".
+    model_name: datarobot/azure/gpt-5-4-2026-03-05
   # To enable LLM provider fallback/failover, remove the datarobot_llm block above and uncomment the following:
   # datarobot_llm:
   #   _type: datarobot-llm-router
