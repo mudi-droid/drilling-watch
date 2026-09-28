@@ -763,3 +763,15 @@ if _is_dragent_server_enabled and _is_a2a_server_enabled:
             value=agent_deployment_a2a_endpoint,
         ),
     )
+
+# The classifier carries a default in model-metadata.yaml so a clone deploys
+# without configuration. Pass .env through when set, so anyone scoring against
+# their own deployment overrides the shared one.
+if _drilling_classifier := os.environ.get("DEPLOYMENT_DRILLING_CLASSIFIER"):
+    agent_agent_runtime_parameters.append(
+        pulumi_datarobot.CustomModelRuntimeParameterValueArgs(
+            key="DEPLOYMENT_DRILLING_CLASSIFIER",
+            type="string",
+            value=_drilling_classifier,
+        ),
+    )
