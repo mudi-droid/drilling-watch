@@ -19,10 +19,11 @@ LLM Blueprint and deployed choose "registered_model.py".
 """
 
 import os
-from datarobot_pulumi_utils.pulumi import export
-from datarobot_pulumi_utils.pulumi.stack import PROJECT_NAME
+
 import pulumi
 import pulumi_datarobot as datarobot
+from datarobot_pulumi_utils.pulumi import export
+from datarobot_pulumi_utils.pulumi.stack import PROJECT_NAME
 
 from . import use_case
 from .libllm import (
