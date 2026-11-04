@@ -13,6 +13,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 general:
+  telemetry:
+    tracing:
+      otelcollector:
+        _type: datarobot_otelcollector
+        # `project` becomes the span resource's service.name, which DataRobot parses as
+        # <entity_type>-<entity_id> to file the trace. Inside a deployment the entity also
+        # arrives in the X-DataRobot-Entity-Id header that the exporter derives from
+        # MLOPS_DEPLOYMENT_ID, and this stays `agent`. Neither of those env vars exists
+        # under `dr run dev`, so for local work .env names the use case entity instead and
+        # the traces land where the Tracing tab is looking. Endpoint is derived from
+        # DATAROBOT_ENDPOINT either way.
+        project: ${DATAROBOT_OTEL_SERVICE_NAME:-agent}
   front_end:
     _type: dragent_fastapi
     # Step adaptor is not necessary for custom agents
@@ -86,8 +98,16 @@ workflow:
   _type: langgraph_agent
   llm_name: datarobot_llm
   description: Drilling Watch - a four-well remote-drilling Watcher agent
+  # NAT names span attributes after the OpenInference convention (input.value); the
+  # Tracing tab reads the OpenTelemetry GenAI one (gen_ai.prompt). This translates.
+  # Without it the token counts arrive and Prompt and Completion stay empty.
+  middleware:
+    - datarobot_otel_conventions
   # tool_names:
   #   - remote_agent
+middleware:
+  datarobot_otel_conventions:
+    _type: datarobot_otel_conventions
 authentication:
   datarobot_auth:
     _type: datarobot_api_key
