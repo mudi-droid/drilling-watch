@@ -110,7 +110,10 @@ def fetch_and_prepare_app_resources(source_id: str) -> Optional[dict[str, Any]]:
 
 def create_resources_args(
     source_id: str,
-) -> pulumi_datarobot.CustomApplicationResourcesArgs | dict[str, Any]:
+) -> (
+    pulumi_datarobot.CustomApplicationResourcesArgs
+    | pulumi_datarobot.CustomApplicationResourcesArgsDict
+):
     """
     Fetch resources from source and convert to Pulumi CustomApplicationResourcesArgs.
 
