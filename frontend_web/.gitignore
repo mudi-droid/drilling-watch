@@ -32,3 +32,6 @@ dist-ssr
 /playwright/.auth/
 
 src/lib/i18n/locales/*_old.json
+
+# Lock the install task takes so concurrent `npm install`s take turns
+.npm-install.lock

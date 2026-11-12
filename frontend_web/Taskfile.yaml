@@ -4,7 +4,16 @@ tasks:
   install:
     desc: 🧱 Install React dependencies
     cmds:
-      - npm install --loglevel=error
+      # `dr run dev` starts this service and fastapi_server (whose dev task runs `task build`
+      # here) together, so two of these can run at once. On an empty node_modules they
+      # collide with ENOTEMPTY and the whole stack exits. Take turns where flock exists
+      # (Linux, codespaces); the second install then finds nothing left to do.
+      - |
+        if command -v flock >/dev/null 2>&1; then
+          flock .npm-install.lock npm install --loglevel=error
+        else
+          npm install --loglevel=error
+        fi
   lint:
     desc: 🧹 Lint React code
     cmds:
